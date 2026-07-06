@@ -57,12 +57,12 @@ const INVULN_TIME = 2.2;
 const GRAVITY = 130;
 
 function makeInitialState(width: number, height: number): GameState {
-  const clouds: Cloud[] = Array.from({ length: 26 }, () => ({
+  const clouds: Cloud[] = Array.from({ length: 16 }, () => ({
     x: Math.random() * width,
     y: Math.random() * height,
-    r: 14 + Math.random() * 34,
-    speed: 18 + Math.random() * 26,
-    opacity: 0.05 + Math.random() * 0.1,
+    r: 20 + Math.random() * 38,
+    speed: 14 + Math.random() * 22,
+    opacity: 0.55 + Math.random() * 0.35,
   }));
   return {
     width,
@@ -103,6 +103,33 @@ function dist2(ax: number, ay: number, bx: number, by: number) {
   const dx = ax - bx;
   const dy = ay - by;
   return dx * dx + dy * dy;
+}
+
+// A cloud is a handful of overlapping circles fused by the fill's nonzero
+// winding rule, giving a fluffy silhouette instead of a plain dot.
+function drawCloud(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, opacity: number) {
+  const puffs = [
+    { dx: -r * 0.95, dy: r * 0.18, pr: r * 0.55 },
+    { dx: -r * 0.35, dy: -r * 0.28, pr: r * 0.7 },
+    { dx: r * 0.4, dy: -r * 0.18, pr: r * 0.62 },
+    { dx: r * 0.95, dy: r * 0.22, pr: r * 0.5 },
+    { dx: 0, dy: r * 0.32, pr: r * 0.78 },
+  ];
+  ctx.beginPath();
+  for (const puff of puffs) {
+    ctx.moveTo(x + puff.dx + puff.pr, y + puff.dy);
+    ctx.arc(x + puff.dx, y + puff.dy, puff.pr, 0, Math.PI * 2);
+  }
+  ctx.fillStyle = `rgba(255,255,255,${opacity})`;
+  ctx.fill();
+  // soft underside shading for a touch of volume
+  ctx.beginPath();
+  for (const puff of puffs) {
+    ctx.moveTo(x + puff.dx + puff.pr * 0.8, y + puff.dy + r * 0.12);
+    ctx.arc(x + puff.dx, y + puff.dy + r * 0.12, puff.pr * 0.8, 0, Math.PI * 2);
+  }
+  ctx.fillStyle = `rgba(170,195,215,${opacity * 0.35})`;
+  ctx.fill();
 }
 
 function spawnExplosion(particles: Particle[], x: number, y: number, colorSet: string[], count = 18) {
@@ -539,15 +566,19 @@ export default function FighterGame() {
       for (const b of s.bullets) b.y += b.vy * dt;
       s.bullets = s.bullets.filter((b) => b.y > -20);
 
-      // difficulty ramps with elapsed time
-      const difficulty = Math.min(1, s.elapsed / 45);
+      // Difficulty ramps quickly over the first 45s, then keeps climbing slowly
+      // for as long as the run continues, so long survivors face an
+      // ever-increasing challenge instead of a flat plateau.
+      const rampIn = Math.min(1, s.elapsed / 45);
+      const overtime = Math.max(0, s.elapsed - 45) / 60;
+      const difficulty = rampIn + overtime * 0.5;
       s.spawnTimer -= dt;
       if (s.spawnTimer <= 0) {
-        s.spawnTimer = clamp(1.15 - difficulty * 0.65, 0.35, 1.15) + Math.random() * 0.3;
+        s.spawnTimer = clamp(1.15 - difficulty * 0.5, 0.22, 1.15) + Math.random() * 0.3;
         s.enemies.push({
           x: 30 + Math.random() * (s.width - 60),
           y: -30,
-          vy: 55 + Math.random() * 35 + difficulty * 40,
+          vy: 55 + Math.random() * 35 + Math.min(difficulty, 8) * 40,
           phase: Math.random() * Math.PI * 2,
           amp: 20 + Math.random() * 40,
           scale: 0.85 + Math.random() * 0.35,
@@ -562,7 +593,7 @@ export default function FighterGame() {
         en.x = clamp(en.x + Math.sin(en.phase) * en.amp * dt * 0.6, 20, s.width - 20);
         en.fireTimer -= dt;
         if (en.fireTimer <= 0 && en.y > 10 && en.y < s.height - 60) {
-          en.fireTimer = 2.2 + Math.random() * 1.6 - difficulty * 0.5;
+          en.fireTimer = clamp(2.2 - difficulty * 0.3, 0.6, 2.2) + Math.random() * 1.6;
           const dx = p.x - en.x;
           const dy = p.y - en.y;
           const len = Math.hypot(dx, dy) || 1;
@@ -575,7 +606,7 @@ export default function FighterGame() {
         }
         en.bombTimer -= dt;
         if (en.bombTimer <= 0 && en.y > 10 && en.y < s.height - 100) {
-          en.bombTimer = 2.8 + Math.random() * 2.4 - difficulty * 0.6;
+          en.bombTimer = clamp(2.8 - difficulty * 0.35, 0.9, 2.8) + Math.random() * 2.4;
           s.bombs.push({ x: en.x, y: en.y + 12, vy: 40, rot: Math.random() * Math.PI * 2 });
         }
       }
@@ -692,17 +723,15 @@ export default function FighterGame() {
       if (timerValueRef.current) timerValueRef.current.textContent = formatTime(s.elapsed);
       const { width, height } = s;
       const sky = c.createLinearGradient(0, 0, 0, height);
-      sky.addColorStop(0, "#0b1a33");
-      sky.addColorStop(1, "#173a5c");
+      sky.addColorStop(0, "#2e7bc4");
+      sky.addColorStop(0.55, "#6fb3e0");
+      sky.addColorStop(1, "#cfeaf7");
       c.fillStyle = sky;
       c.fillRect(0, 0, width, height);
 
       c.save();
       for (const cl of s.clouds) {
-        c.beginPath();
-        c.arc(cl.x, cl.y, cl.r, 0, Math.PI * 2);
-        c.fillStyle = `rgba(255,255,255,${cl.opacity})`;
-        c.fill();
+        drawCloud(c, cl.x, cl.y, cl.r, cl.opacity);
       }
       c.restore();
 
@@ -783,7 +812,7 @@ export default function FighterGame() {
   return (
     <div
       ref={containerRef}
-      className="relative h-dvh w-full overflow-hidden select-none bg-[#0b1a33]"
+      className="relative h-dvh w-full overflow-hidden select-none bg-[#6fb3e0]"
     >
       <canvas ref={canvasRef} className="absolute inset-0 block" />
 
