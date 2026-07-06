@@ -328,21 +328,6 @@ function drawBomb(ctx: CanvasRenderingContext2D) {
   ctx.restore();
 }
 
-// Synthesizes a short laser "pew" via Web Audio instead of shipping an audio file.
-function playShootSound(ctx: AudioContext) {
-  const now = ctx.currentTime;
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  osc.type = "sawtooth";
-  osc.frequency.setValueAtTime(950, now);
-  osc.frequency.exponentialRampToValueAtTime(240, now + 0.09);
-  gain.gain.setValueAtTime(0.07, now);
-  gain.gain.exponentialRampToValueAtTime(0.001, now + 0.11);
-  osc.connect(gain).connect(ctx.destination);
-  osc.start(now);
-  osc.stop(now + 0.12);
-}
-
 function drawBullet(ctx: CanvasRenderingContext2D) {
   const grad = ctx.createLinearGradient(0, -7, 0, 5);
   grad.addColorStop(0, "rgba(255,255,255,0.95)");
@@ -387,7 +372,6 @@ export default function FighterGame() {
   const statusRef = useRef<Status>("ready");
   const rafRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
-  const audioCtxRef = useRef<AudioContext | null>(null);
   const timerValueRef = useRef<HTMLDivElement | null>(null);
 
   const [status, setStatus] = useState<Status>("ready");
@@ -407,17 +391,6 @@ export default function FighterGame() {
   }, [status]);
 
   const startGame = () => {
-    // (Re)create the audio context here, inside a real user-gesture handler,
-    // so browsers' autoplay restrictions don't block later sound effects. Some
-    // browsers still hand back a "suspended" context even when constructed
-    // inside a gesture, so resume() must run on every start, not just reuse.
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = new AudioContext();
-    }
-    if (audioCtxRef.current.state === "suspended") {
-      audioCtxRef.current.resume();
-    }
-
     const el = containerRef.current;
     const width = el?.clientWidth ?? 360;
     const height = el?.clientHeight ?? 640;
@@ -562,7 +535,6 @@ export default function FighterGame() {
         s.fireTimer = 0.18;
         s.bullets.push({ x: p.x - 7, y: p.y - 14, vy: -560 });
         s.bullets.push({ x: p.x + 7, y: p.y - 14, vy: -560 });
-        if (audioCtxRef.current) playShootSound(audioCtxRef.current);
       }
       for (const b of s.bullets) b.y += b.vy * dt;
       s.bullets = s.bullets.filter((b) => b.y > -20);
@@ -805,7 +777,6 @@ export default function FighterGame() {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       document.removeEventListener("visibilitychange", onVisibility);
-      audioCtxRef.current?.close();
     };
   }, []);
 
