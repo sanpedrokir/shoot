@@ -57,12 +57,12 @@ const INVULN_TIME = 2.2;
 const GRAVITY = 130;
 
 function makeInitialState(width: number, height: number): GameState {
-  const clouds: Cloud[] = Array.from({ length: 16 }, () => ({
+  const clouds: Cloud[] = Array.from({ length: 6 }, () => ({
     x: Math.random() * width,
     y: Math.random() * height,
-    r: 20 + Math.random() * 38,
-    speed: 14 + Math.random() * 22,
-    opacity: 0.55 + Math.random() * 0.35,
+    r: 22 + Math.random() * 34,
+    speed: 12 + Math.random() * 18,
+    opacity: 0.35 + Math.random() * 0.3,
   }));
   return {
     width,
@@ -105,31 +105,28 @@ function dist2(ax: number, ay: number, bx: number, by: number) {
   return dx * dx + dy * dy;
 }
 
-// A cloud is a handful of overlapping circles fused by the fill's nonzero
-// winding rule, giving a fluffy silhouette instead of a plain dot.
+// Each puff is its own radial gradient (soft, feathered edge) rather than a
+// flat-filled circle, so clouds read as hazy and wispy instead of cartoonish.
 function drawCloud(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, opacity: number) {
   const puffs = [
-    { dx: -r * 0.95, dy: r * 0.18, pr: r * 0.55 },
-    { dx: -r * 0.35, dy: -r * 0.28, pr: r * 0.7 },
-    { dx: r * 0.4, dy: -r * 0.18, pr: r * 0.62 },
-    { dx: r * 0.95, dy: r * 0.22, pr: r * 0.5 },
-    { dx: 0, dy: r * 0.32, pr: r * 0.78 },
+    { dx: -r * 0.9, dy: r * 0.15, pr: r * 0.6 },
+    { dx: -r * 0.25, dy: -r * 0.2, pr: r * 0.75 },
+    { dx: r * 0.4, dy: -r * 0.1, pr: r * 0.68 },
+    { dx: r * 0.95, dy: r * 0.2, pr: r * 0.52 },
+    { dx: 0, dy: r * 0.28, pr: r * 0.8 },
   ];
-  ctx.beginPath();
   for (const puff of puffs) {
-    ctx.moveTo(x + puff.dx + puff.pr, y + puff.dy);
-    ctx.arc(x + puff.dx, y + puff.dy, puff.pr, 0, Math.PI * 2);
+    const px = x + puff.dx;
+    const py = y + puff.dy;
+    const grad = ctx.createRadialGradient(px, py, 0, px, py, puff.pr);
+    grad.addColorStop(0, `rgba(255,255,255,${opacity})`);
+    grad.addColorStop(0.55, `rgba(250,252,255,${opacity * 0.65})`);
+    grad.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(px, py, puff.pr, 0, Math.PI * 2);
+    ctx.fill();
   }
-  ctx.fillStyle = `rgba(255,255,255,${opacity})`;
-  ctx.fill();
-  // soft underside shading for a touch of volume
-  ctx.beginPath();
-  for (const puff of puffs) {
-    ctx.moveTo(x + puff.dx + puff.pr * 0.8, y + puff.dy + r * 0.12);
-    ctx.arc(x + puff.dx, y + puff.dy + r * 0.12, puff.pr * 0.8, 0, Math.PI * 2);
-  }
-  ctx.fillStyle = `rgba(170,195,215,${opacity * 0.35})`;
-  ctx.fill();
 }
 
 function spawnExplosion(particles: Particle[], x: number, y: number, colorSet: string[], count = 18) {
@@ -723,9 +720,10 @@ export default function FighterGame() {
       if (timerValueRef.current) timerValueRef.current.textContent = formatTime(s.elapsed);
       const { width, height } = s;
       const sky = c.createLinearGradient(0, 0, 0, height);
-      sky.addColorStop(0, "#2e7bc4");
-      sky.addColorStop(0.55, "#6fb3e0");
-      sky.addColorStop(1, "#cfeaf7");
+      sky.addColorStop(0, "#155a9e");
+      sky.addColorStop(0.4, "#357fbe");
+      sky.addColorStop(0.75, "#79aed7");
+      sky.addColorStop(1, "#c3dfec");
       c.fillStyle = sky;
       c.fillRect(0, 0, width, height);
 
@@ -812,7 +810,7 @@ export default function FighterGame() {
   return (
     <div
       ref={containerRef}
-      className="relative h-dvh w-full overflow-hidden select-none bg-[#6fb3e0]"
+      className="relative h-dvh w-full overflow-hidden select-none bg-[#357fbe]"
     >
       <canvas ref={canvasRef} className="absolute inset-0 block" />
 
