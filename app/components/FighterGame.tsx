@@ -27,11 +27,13 @@ type Particle = {
 };
 type Cloud = { x: number; y: number; r: number; speed: number; opacity: number };
 
-type Status = "ready" | "playing" | "gameover";
+type Status = "ready" | "playing" | "levelcomplete" | "gameover";
 
 interface GameState {
   width: number;
   height: number;
+  level: number;
+  levelDuration: number;
   player: { x: number; y: number; targetX: number; targetY: number; invuln: number };
   bullets: Bullet[];
   missiles: Missile[];
@@ -56,7 +58,19 @@ const BOMB_HIT_RADIUS = 4.5;
 const INVULN_TIME = 2.2;
 const GRAVITY = 130;
 
-function makeInitialState(width: number, height: number): GameState {
+// Difficulty grows with the log of the level so early stages ramp up fast
+// while the long tail (toward level 1000) keeps climbing but never explodes.
+function levelDifficulty(level: number) {
+  return Math.log2(level + 1) * 0.85;
+}
+
+// How long a level requires surviving to clear it: quick early on, capping
+// out so a 1000-level campaign stays a long-term goal, not a marathon.
+function levelSurviveDuration(level: number) {
+  return clamp(14 + level * 0.4, 14, 32);
+}
+
+function makeInitialState(width: number, height: number, level: number): GameState {
   const clouds: Cloud[] = Array.from({ length: 6 }, () => ({
     x: Math.random() * width,
     y: Math.random() * height,
@@ -67,6 +81,8 @@ function makeInitialState(width: number, height: number): GameState {
   return {
     width,
     height,
+    level,
+    levelDuration: levelSurviveDuration(level),
     player: {
       x: width / 2,
       y: height - height * 0.16,
@@ -389,6 +405,16 @@ const ENEMY_SCHEME = {
   accent: "#e0e0e0",
 };
 
+function readStoredMaxLevel(): number {
+  if (typeof window === "undefined") return 1;
+  try {
+    const v = parseInt(window.localStorage.getItem("skyfighter-max-level") ?? "1", 10);
+    return Number.isFinite(v) && v >= 1 ? v : 1;
+  } catch {
+    return 1;
+  }
+}
+
 export default function FighterGame() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -397,10 +423,13 @@ export default function FighterGame() {
   const rafRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
   const timerValueRef = useRef<HTMLDivElement | null>(null);
+  const selectedLevelRef = useRef(1);
 
   const [status, setStatus] = useState<Status>("ready");
   const [score, setScore] = useState(0);
   const [lives, setLives] = useState(3);
+  const [maxUnlockedLevel, setMaxUnlockedLevel] = useState(readStoredMaxLevel);
+  const [selectedLevel, setSelectedLevel] = useState(readStoredMaxLevel);
   const [best, setBest] = useState(() => {
     if (typeof window === "undefined") return 0;
     try {
@@ -414,14 +443,24 @@ export default function FighterGame() {
     statusRef.current = status;
   }, [status]);
 
-  const startGame = () => {
+  useEffect(() => {
+    selectedLevelRef.current = selectedLevel;
+  }, [selectedLevel]);
+
+  const startLevel = (level: number) => {
+    setSelectedLevel(level);
+    selectedLevelRef.current = level;
     const el = containerRef.current;
     const width = el?.clientWidth ?? 360;
     const height = el?.clientHeight ?? 640;
-    stateRef.current = makeInitialState(width, height);
+    stateRef.current = makeInitialState(width, height, level);
     setScore(0);
     setLives(3);
     setStatus("playing");
+  };
+
+  const changeSelectedLevel = (delta: number) => {
+    setSelectedLevel((l) => Math.max(1, Math.min(maxUnlockedLevel, l + delta)));
   };
 
   useEffect(() => {
@@ -446,7 +485,7 @@ export default function FighterGame() {
         stateRef.current.player.x = clamp(stateRef.current.player.x, PLAYER_RADIUS, width - PLAYER_RADIUS);
         stateRef.current.player.y = clamp(stateRef.current.player.y, PLAYER_RADIUS, height - PLAYER_RADIUS);
       } else {
-        stateRef.current = makeInitialState(width, height);
+        stateRef.current = makeInitialState(width, height, selectedLevelRef.current);
       }
     };
     resize();
@@ -466,7 +505,7 @@ export default function FighterGame() {
       const p = getLocalPoint(e.clientX, e.clientY);
       s.player.targetX = p.x;
       s.player.targetY = p.y;
-      if (statusRef.current === "ready") startGame();
+      if (statusRef.current === "ready") startLevel(selectedLevelRef.current);
       e.preventDefault();
     };
     const onPointerMove = (e: PointerEvent) => {
@@ -493,7 +532,7 @@ export default function FighterGame() {
       if (keys.includes(e.key)) {
         e.preventDefault();
         stateRef.current?.keys.add(e.key.toLowerCase());
-        if (statusRef.current === "ready") startGame();
+        if (statusRef.current === "ready") startLevel(selectedLevelRef.current);
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
@@ -563,12 +602,8 @@ export default function FighterGame() {
       for (const b of s.bullets) b.y += b.vy * dt;
       s.bullets = s.bullets.filter((b) => b.y > -20);
 
-      // Difficulty ramps quickly over the first 45s, then keeps climbing slowly
-      // for as long as the run continues, so long survivors face an
-      // ever-increasing challenge instead of a flat plateau.
-      const rampIn = Math.min(1, s.elapsed / 45);
-      const overtime = Math.max(0, s.elapsed - 45) / 60;
-      const difficulty = rampIn + overtime * 0.5;
+      // Difficulty is driven by the level being played, not elapsed time.
+      const difficulty = levelDifficulty(s.level);
       s.spawnTimer -= dt;
       if (s.spawnTimer <= 0) {
         s.spawnTimer = clamp(1.15 - difficulty * 0.5, 0.22, 1.15) + Math.random() * 0.3;
@@ -714,10 +749,26 @@ export default function FighterGame() {
         pt.life -= dt;
       }
       s.particles = s.particles.filter((pt) => pt.life > 0);
+
+      if (statusRef.current === "playing" && s.elapsed >= s.levelDuration) {
+        statusRef.current = "levelcomplete";
+        setStatus("levelcomplete");
+        setMaxUnlockedLevel((m) => {
+          const next = Math.max(m, s.level + 1);
+          try {
+            window.localStorage.setItem("skyfighter-max-level", String(next));
+          } catch {
+            // ignore
+          }
+          return next;
+        });
+      }
     }
 
     function render(c: CanvasRenderingContext2D, s: GameState, currentStatus: Status) {
-      if (timerValueRef.current) timerValueRef.current.textContent = formatTime(s.elapsed);
+      if (timerValueRef.current) {
+        timerValueRef.current.textContent = formatTime(Math.max(0, s.levelDuration - s.elapsed));
+      }
       const { width, height } = s;
       const sky = c.createLinearGradient(0, 0, 0, height);
       sky.addColorStop(0, "#155a9e");
@@ -820,7 +871,7 @@ export default function FighterGame() {
           <div className="text-lg font-bold tabular-nums leading-tight">{score}</div>
         </div>
         <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm text-center">
-          <div className="text-xs uppercase tracking-wide text-white/60">Time</div>
+          <div className="text-xs uppercase tracking-wide text-white/60">Level {selectedLevel}</div>
           <div ref={timerValueRef} className="text-lg font-bold tabular-nums leading-tight">
             0:00
           </div>
@@ -844,14 +895,62 @@ export default function FighterGame() {
             Drag or move your mouse to steer. Your jet auto-fires — dodge homing missiles and falling bombs, and
             shoot down every plane you can.
           </p>
+
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => changeSelectedLevel(-1)}
+              disabled={selectedLevel <= 1}
+              aria-label="Previous level"
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-white/15 text-xl font-bold disabled:opacity-30"
+            >
+              ‹
+            </button>
+            <div className="min-w-[7rem]">
+              <div className="text-xs uppercase tracking-wide text-white/60">Level</div>
+              <div className="text-2xl font-extrabold tabular-nums">{selectedLevel}</div>
+            </div>
+            <button
+              onClick={() => changeSelectedLevel(1)}
+              disabled={selectedLevel >= maxUnlockedLevel}
+              aria-label="Next level"
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-white/15 text-xl font-bold disabled:opacity-30"
+            >
+              ›
+            </button>
+          </div>
+          <p className="text-xs text-white/60">
+            Survive {formatTime(levelSurviveDuration(selectedLevel))} to clear this level.
+          </p>
+
           {best > 0 && <p className="text-xs text-white/60">Best score: {best}</p>}
           <button
-            onClick={startGame}
+            onClick={() => startLevel(selectedLevel)}
             className="mt-1 rounded-full bg-red-600 px-8 py-3 text-base font-bold shadow-lg shadow-red-900/40 active:scale-95 transition-transform"
           >
-            Tap to Start
+            Start Level {selectedLevel}
           </button>
           <p className="text-xs text-white/50">Arrow keys / WASD also work on desktop</p>
+        </div>
+      )}
+
+      {status === "levelcomplete" && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/65 px-6 text-center text-white font-sans">
+          <h2 className="text-3xl font-extrabold">Level {selectedLevel} Complete!</h2>
+          <p className="text-lg">
+            Score: <span className="font-bold">{score}</span>
+          </p>
+          <button
+            onClick={() => startLevel(selectedLevel + 1)}
+            className="mt-1 rounded-full bg-red-600 px-8 py-3 text-base font-bold shadow-lg shadow-red-900/40 active:scale-95 transition-transform"
+          >
+            Next Level
+          </button>
+          <button
+            onClick={() => setStatus("ready")}
+            className="text-sm text-white/70 underline underline-offset-2"
+          >
+            Level Select
+          </button>
         </div>
       )}
 
@@ -859,14 +958,20 @@ export default function FighterGame() {
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/65 px-6 text-center text-white font-sans">
           <h2 className="text-3xl font-extrabold">Shot Down!</h2>
           <p className="text-lg">
-            Score: <span className="font-bold">{score}</span>
+            Level {selectedLevel} · Score: <span className="font-bold">{score}</span>
           </p>
           <p className="text-sm text-white/70">Best: {best}</p>
           <button
-            onClick={startGame}
+            onClick={() => startLevel(selectedLevel)}
             className="mt-1 rounded-full bg-red-600 px-8 py-3 text-base font-bold shadow-lg shadow-red-900/40 active:scale-95 transition-transform"
           >
-            Play Again
+            Retry Level {selectedLevel}
+          </button>
+          <button
+            onClick={() => setStatus("ready")}
+            className="text-sm text-white/70 underline underline-offset-2"
+          >
+            Level Select
           </button>
         </div>
       )}
