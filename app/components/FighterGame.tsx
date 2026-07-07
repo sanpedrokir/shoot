@@ -80,8 +80,12 @@ const MISSILE_HIT_RADIUS = 3.5;
 const BOMB_HIT_RADIUS = 4.5;
 const INVULN_TIME = 2.2;
 const GRAVITY = 130;
-const BROADCAST_INTERVAL = 1 / 24;
-const INPUT_SEND_INTERVAL = 1 / 24;
+// Pusher hard-caps client events at 10/sec per connection; staying well
+// under that avoids events getting silently dropped (which reads as
+// mounting lag that eventually "hangs" once updates stop arriving).
+const BROADCAST_INTERVAL = 1 / 8;
+const INPUT_SEND_INTERVAL = 1 / 8;
+const MAX_SNAPSHOT_ENTITIES = 40;
 
 // Difficulty grows with the log of the level so early stages ramp up fast
 // while the long tail (toward level 1000 and beyond) keeps climbing but
@@ -90,10 +94,11 @@ function levelDifficulty(level: number) {
   return Math.log2(level + 1) * 0.85;
 }
 
-// How long a level requires surviving to clear it: quick early on, capping
-// out so a long campaign stays a long-term goal, not a marathon.
+// How long a level requires surviving to clear it: level 1 is a full 3
+// minutes, growing slowly and capping so a long campaign stays a
+// long-term goal rather than an ever-longer marathon.
 function levelSurviveDuration(level: number) {
-  return clamp(14 + level * 0.4, 14, 32);
+  return clamp(180 + (level - 1) * 4, 180, 300);
 }
 
 function makePlayers(width: number, height: number, playerIds: string[]): Player[] {
@@ -134,6 +139,12 @@ function makeInitialState(width: number, height: number, level: number, playerId
 
 function clamp(v: number, lo: number, hi: number) {
   return Math.min(hi, Math.max(lo, v));
+}
+
+// Trims broadcast payload size (fewer JSON bytes per number) since Pusher
+// client events are capped at 10KB each.
+function round1(n: number) {
+  return Math.round(n * 10) / 10;
 }
 
 function keyboardVector(keys: Set<string>): { kx: number; ky: number } {
@@ -513,6 +524,7 @@ export default function FighterGame() {
   const lastTimeRef = useRef<number>(0);
   const timerValueRef = useRef<HTMLDivElement | null>(null);
   const selectedLevelRef = useRef(1);
+  const maxUnlockedLevelRef = useRef(1);
   const lobbyModeRef = useRef<LobbyMode>("solo");
 
   const localIdRef = useRef<string>("");
@@ -576,6 +588,10 @@ export default function FighterGame() {
   useEffect(() => {
     selectedLevelRef.current = selectedLevel;
   }, [selectedLevel]);
+
+  useEffect(() => {
+    maxUnlockedLevelRef.current = maxUnlockedLevel;
+  }, [maxUnlockedLevel]);
 
   useEffect(() => {
     lobbyModeRef.current = lobbyMode;
@@ -703,13 +719,9 @@ export default function FighterGame() {
     });
   };
 
-  const changeSelectedLevel = (delta: number) => {
-    setSelectedLevel((l) => Math.max(1, Math.min(maxUnlockedLevel, l + delta)));
-  };
-
   const handleStart = () => {
-    if (lobbyMode === "solo") startSolo(selectedLevel);
-    else if (lobbyMode === "host") hostStartOrRestart(selectedLevel);
+    if (lobbyMode === "solo") startSolo(maxUnlockedLevel);
+    else if (lobbyMode === "host") hostStartOrRestart(maxUnlockedLevel);
   };
 
   const handleNextLevel = () => {
@@ -759,7 +771,7 @@ export default function FighterGame() {
           pl.targetY = pl.y;
         }
       } else {
-        stateRef.current = makeInitialState(width, height, selectedLevelRef.current, [
+        stateRef.current = makeInitialState(width, height, maxUnlockedLevelRef.current, [
           localIdRef.current || "local",
         ]);
       }
@@ -789,7 +801,7 @@ export default function FighterGame() {
         pl.targetY = p.y;
       }
       if (statusRef.current === "ready" && lobbyModeRef.current === "solo") {
-        startSolo(selectedLevelRef.current);
+        startSolo(maxUnlockedLevelRef.current);
       }
       e.preventDefault();
     };
@@ -822,7 +834,7 @@ export default function FighterGame() {
         e.preventDefault();
         stateRef.current?.keys.add(e.key.toLowerCase());
         if (statusRef.current === "ready" && lobbyModeRef.current === "solo") {
-          startSolo(selectedLevelRef.current);
+          startSolo(maxUnlockedLevelRef.current);
         }
       }
     };
@@ -958,18 +970,31 @@ export default function FighterGame() {
     function buildSnapshot(s: GameState, currentStatus: Status): NetSnapshot {
       return {
         status: currentStatus === "ready" ? "playing" : currentStatus,
-        width: s.width,
-        height: s.height,
+        width: round1(s.width),
+        height: round1(s.height),
         level: s.level,
-        levelDuration: s.levelDuration,
-        elapsed: s.elapsed,
+        levelDuration: round1(s.levelDuration),
+        elapsed: round1(s.elapsed),
         score: scoreRef.current,
         lives: livesRef.current,
-        players: s.players.map((pl) => ({ id: pl.id, x: pl.x, y: pl.y, invuln: pl.invuln })),
-        enemies: s.enemies.map((en) => ({ x: en.x, y: en.y, scale: en.scale, phase: en.phase })),
-        missiles: s.missiles.map((m) => ({ x: m.x, y: m.y, vx: m.vx, vy: m.vy })),
-        bombs: s.bombs.map((b) => ({ x: b.x, y: b.y, rot: b.rot })),
-        bullets: s.bullets.map((b) => ({ x: b.x, y: b.y })),
+        players: s.players.map((pl) => ({
+          id: pl.id,
+          x: round1(pl.x),
+          y: round1(pl.y),
+          invuln: round1(pl.invuln),
+        })),
+        enemies: s.enemies
+          .slice(0, MAX_SNAPSHOT_ENTITIES)
+          .map((en) => ({ x: round1(en.x), y: round1(en.y), scale: round1(en.scale), phase: round1(en.phase) })),
+        missiles: s.missiles
+          .slice(0, MAX_SNAPSHOT_ENTITIES)
+          .map((m) => ({ x: round1(m.x), y: round1(m.y), vx: round1(m.vx), vy: round1(m.vy) })),
+        bombs: s.bombs
+          .slice(0, MAX_SNAPSHOT_ENTITIES)
+          .map((b) => ({ x: round1(b.x), y: round1(b.y), rot: round1(b.rot) })),
+        bullets: s.bullets
+          .slice(0, MAX_SNAPSHOT_ENTITIES)
+          .map((b) => ({ x: round1(b.x), y: round1(b.y) })),
       };
     }
 
@@ -1352,30 +1377,12 @@ export default function FighterGame() {
 
           {lobbyMode !== "join" && (
             <>
-              <div className="flex items-center gap-4">
-                <button
-                  onClick={() => changeSelectedLevel(-1)}
-                  disabled={selectedLevel <= 1}
-                  aria-label="Previous level"
-                  className="flex h-10 w-10 items-center justify-center rounded-full bg-white/15 text-xl font-bold disabled:opacity-30"
-                >
-                  ‹
-                </button>
-                <div className="min-w-[7rem]">
-                  <div className="text-xs uppercase tracking-wide text-white/60">Level</div>
-                  <div className="text-2xl font-extrabold tabular-nums">{selectedLevel}</div>
-                </div>
-                <button
-                  onClick={() => changeSelectedLevel(1)}
-                  disabled={selectedLevel >= maxUnlockedLevel}
-                  aria-label="Next level"
-                  className="flex h-10 w-10 items-center justify-center rounded-full bg-white/15 text-xl font-bold disabled:opacity-30"
-                >
-                  ›
-                </button>
+              <div className="min-w-[7rem] text-center">
+                <div className="text-xs uppercase tracking-wide text-white/60">Level</div>
+                <div className="text-2xl font-extrabold tabular-nums">{maxUnlockedLevel}</div>
               </div>
               <p className="text-xs text-white/60">
-                Survive {formatTime(levelSurviveDuration(selectedLevel))} to clear this level.
+                Survive {formatTime(levelSurviveDuration(maxUnlockedLevel))} to clear this level.
               </p>
             </>
           )}
