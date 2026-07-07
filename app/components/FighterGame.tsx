@@ -1,6 +1,17 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import type { PresenceChannel } from "pusher-js";
+import {
+  MAX_PLAYERS,
+  generateRoomCode,
+  getClientId,
+  subscribeToRoom,
+  leaveRoom,
+  type InputMessage,
+  type StartMessage,
+  type NetSnapshot,
+} from "../lib/coop";
 
 type Bullet = { x: number; y: number; vy: number };
 type Missile = { x: number; y: number; vy: number; vx: number };
@@ -27,21 +38,33 @@ type Particle = {
 };
 type Cloud = { x: number; y: number; r: number; speed: number; opacity: number };
 
+type Player = {
+  id: string;
+  x: number;
+  y: number;
+  targetX: number;
+  targetY: number;
+  invuln: number;
+  fireTimer: number;
+};
+
 type Status = "ready" | "playing" | "levelcomplete" | "gameover";
+type NetRole = "solo" | "host" | "ally";
+type LobbyMode = "solo" | "host" | "join";
+type ConnStatus = "idle" | "connecting" | "connected" | "error";
 
 interface GameState {
   width: number;
   height: number;
   level: number;
   levelDuration: number;
-  player: { x: number; y: number; targetX: number; targetY: number; invuln: number };
+  players: Player[];
   bullets: Bullet[];
   missiles: Missile[];
   bombs: Bomb[];
   enemies: Enemy[];
   particles: Particle[];
   clouds: Cloud[];
-  fireTimer: number;
   spawnTimer: number;
   elapsed: number;
   pointerDown: boolean;
@@ -57,20 +80,32 @@ const MISSILE_HIT_RADIUS = 3.5;
 const BOMB_HIT_RADIUS = 4.5;
 const INVULN_TIME = 2.2;
 const GRAVITY = 130;
+const BROADCAST_INTERVAL = 1 / 15;
+const INPUT_SEND_INTERVAL = 1 / 15;
 
 // Difficulty grows with the log of the level so early stages ramp up fast
-// while the long tail (toward level 1000) keeps climbing but never explodes.
+// while the long tail (toward level 1000 and beyond) keeps climbing but
+// never explodes.
 function levelDifficulty(level: number) {
   return Math.log2(level + 1) * 0.85;
 }
 
 // How long a level requires surviving to clear it: quick early on, capping
-// out so a 1000-level campaign stays a long-term goal, not a marathon.
+// out so a long campaign stays a long-term goal, not a marathon.
 function levelSurviveDuration(level: number) {
   return clamp(14 + level * 0.4, 14, 32);
 }
 
-function makeInitialState(width: number, height: number, level: number): GameState {
+function makePlayers(width: number, height: number, playerIds: string[]): Player[] {
+  const n = playerIds.length;
+  return playerIds.map((id, i) => {
+    const x = width / 2 + (i - (n - 1) / 2) * 56;
+    const y = height - height * 0.16;
+    return { id, x, y, targetX: x, targetY: y, invuln: 2, fireTimer: 0 };
+  });
+}
+
+function makeInitialState(width: number, height: number, level: number, playerIds: string[]): GameState {
   const clouds: Cloud[] = Array.from({ length: 6 }, () => ({
     x: Math.random() * width,
     y: Math.random() * height,
@@ -83,20 +118,13 @@ function makeInitialState(width: number, height: number, level: number): GameSta
     height,
     level,
     levelDuration: levelSurviveDuration(level),
-    player: {
-      x: width / 2,
-      y: height - height * 0.16,
-      targetX: width / 2,
-      targetY: height - height * 0.16,
-      invuln: 2,
-    },
+    players: makePlayers(width, height, playerIds),
     bullets: [],
     missiles: [],
     bombs: [],
     enemies: [],
     particles: [],
     clouds,
-    fireTimer: 0,
     spawnTimer: 0.6,
     elapsed: 0,
     pointerDown: false,
@@ -394,6 +422,30 @@ const PLAYER_SCHEME = {
   accent: "#d1372c",
 };
 
+const ALLY_SCHEME_GREEN = {
+  bodyTop: "#eafbea",
+  bodyBottom: "#5fa876",
+  stroke: "#1f3d29",
+  canopyTop: "#bfffd8",
+  canopyBottom: "#0d3a1f",
+  roundelOuter: "#1f8a3d",
+  roundelInner: "#ffffff",
+  accent: "#f2c744",
+};
+
+const ALLY_SCHEME_AMBER = {
+  bodyTop: "#fff3df",
+  bodyBottom: "#c98a3a",
+  stroke: "#4a2e0d",
+  canopyTop: "#ffe6b3",
+  canopyBottom: "#5c3a0d",
+  roundelOuter: "#d98c1f",
+  roundelInner: "#ffffff",
+  accent: "#2c5fa8",
+};
+
+const PLAYER_SCHEMES = [PLAYER_SCHEME, ALLY_SCHEME_GREEN, ALLY_SCHEME_AMBER];
+
 const ENEMY_SCHEME = {
   bodyTop: "#5c5f66",
   bodyBottom: "#26282c",
@@ -424,10 +476,33 @@ export default function FighterGame() {
   const lastTimeRef = useRef<number>(0);
   const timerValueRef = useRef<HTMLDivElement | null>(null);
   const selectedLevelRef = useRef(1);
+  const lobbyModeRef = useRef<LobbyMode>("solo");
+
+  const localIdRef = useRef<string>("");
+  const netRoleRef = useRef<NetRole>("solo");
+  const playerIdsRef = useRef<string[]>([]);
+  const channelRef = useRef<PresenceChannel | null>(null);
+  const pendingInputsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  const broadcastAccumRef = useRef(0);
+  const inputAccumRef = useRef(0);
+  const latestSnapshotRef = useRef<NetSnapshot | null>(null);
 
   const [status, setStatus] = useState<Status>("ready");
   const [score, setScore] = useState(0);
   const [lives, setLives] = useState(3);
+  const [maxLives, setMaxLives] = useState(3);
+  const [hostLeft, setHostLeft] = useState(false);
+
+  // Kept in refs so the game-loop closure (created once) can read the
+  // latest score/lives when building a host broadcast snapshot.
+  const scoreRef = useRef(score);
+  const livesRef = useRef(lives);
+  useEffect(() => {
+    scoreRef.current = score;
+  }, [score]);
+  useEffect(() => {
+    livesRef.current = lives;
+  }, [lives]);
   const [maxUnlockedLevel, setMaxUnlockedLevel] = useState(readStoredMaxLevel);
   const [selectedLevel, setSelectedLevel] = useState(readStoredMaxLevel);
   const [best, setBest] = useState(() => {
@@ -439,6 +514,18 @@ export default function FighterGame() {
     }
   });
 
+  const [lobbyMode, setLobbyMode] = useState<LobbyMode>("solo");
+  const [netRole, setNetRole] = useState<NetRole>("solo");
+  const [roomCode, setRoomCode] = useState("");
+  const [joinCodeInput, setJoinCodeInput] = useState("");
+  const [connStatus, setConnStatus] = useState<ConnStatus>("idle");
+  const [connError, setConnError] = useState("");
+  const [teammateIds, setTeammateIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    localIdRef.current = getClientId();
+  }, []);
+
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
@@ -447,20 +534,152 @@ export default function FighterGame() {
     selectedLevelRef.current = selectedLevel;
   }, [selectedLevel]);
 
-  const startLevel = (level: number) => {
-    setSelectedLevel(level);
+  useEffect(() => {
+    lobbyModeRef.current = lobbyMode;
+  }, [lobbyMode]);
+
+  useEffect(() => {
+    netRoleRef.current = netRole;
+  }, [netRole]);
+
+  const resetLobby = () => {
+    if (channelRef.current && roomCode) {
+      leaveRoom(roomCode);
+      channelRef.current = null;
+    }
+    setConnStatus("idle");
+    setConnError("");
+    setRoomCode("");
+    setTeammateIds([]);
+  };
+
+  const selectLobbyMode = (mode: LobbyMode) => {
+    resetLobby();
+    setLobbyMode(mode);
+  };
+
+  const beginGame = (role: NetRole, playerIds: string[], level: number) => {
+    netRoleRef.current = role;
+    setNetRole(role);
+    playerIdsRef.current = playerIds;
+    setHostLeft(false);
     selectedLevelRef.current = level;
     const el = containerRef.current;
     const width = el?.clientWidth ?? 360;
     const height = el?.clientHeight ?? 640;
-    stateRef.current = makeInitialState(width, height, level);
+    stateRef.current = makeInitialState(width, height, level, playerIds);
+    setSelectedLevel(level);
     setScore(0);
-    setLives(3);
+    scoreRef.current = 0;
+    const total = 3 + (playerIds.length - 1);
+    setMaxLives(total);
+    setLives(total);
+    livesRef.current = total;
+    // Set synchronously (not just via the status-syncing effect) so the
+    // game-loop closure never reads a stale ref for the one tick between
+    // this call and the next React commit.
+    statusRef.current = "playing";
     setStatus("playing");
+  };
+
+  const startSolo = (level: number) => {
+    beginGame("solo", [localIdRef.current], level);
+  };
+
+  const hostRoom = () => {
+    const code = generateRoomCode();
+    setRoomCode(code);
+    setConnStatus("connecting");
+    setConnError("");
+    const channel = subscribeToRoom(code);
+    channelRef.current = channel;
+
+    channel.bind("pusher:subscription_succeeded", () => {
+      setConnStatus("connected");
+    });
+    channel.bind("pusher:subscription_error", () => {
+      setConnStatus("error");
+      setConnError("Could not create the room. Please try again.");
+    });
+    const syncTeammates = () => {
+      const ids: string[] = [];
+      channel.members.each((member: { id: string }) => {
+        if (member.id !== localIdRef.current) ids.push(member.id);
+      });
+      setTeammateIds(ids);
+    };
+    channel.bind("pusher:member_added", syncTeammates);
+    channel.bind("pusher:member_removed", syncTeammates);
+    channel.bind("client-input", (data: InputMessage) => {
+      pendingInputsRef.current.set(data.id, { x: data.x, y: data.y });
+    });
+  };
+
+  const hostStartOrRestart = (level: number) => {
+    const ids = [localIdRef.current, ...teammateIds].slice(0, MAX_PLAYERS);
+    channelRef.current?.trigger("client-start", { level, playerIds: ids } satisfies StartMessage);
+    beginGame("host", ids, level);
+  };
+
+  const joinRoom = (code: string) => {
+    if (!/^\d{6}$/.test(code)) {
+      setConnStatus("error");
+      setConnError("Enter the 6-digit code your host shared.");
+      return;
+    }
+    setRoomCode(code);
+    setConnStatus("connecting");
+    setConnError("");
+    const channel = subscribeToRoom(code);
+    channelRef.current = channel;
+
+    channel.bind("pusher:subscription_succeeded", () => {
+      setConnStatus("connected");
+    });
+    channel.bind("pusher:subscription_error", () => {
+      setConnStatus("error");
+      setConnError("Couldn't join — check the code and try again.");
+    });
+    channel.bind("client-start", (data: StartMessage) => {
+      beginGame("ally", data.playerIds, data.level);
+    });
+    channel.bind("client-state", (data: NetSnapshot) => {
+      latestSnapshotRef.current = data;
+    });
+    channel.bind("pusher:member_removed", (member: { id: string }) => {
+      if (netRoleRef.current === "ally" && member.id === playerIdsRef.current[0]) {
+        setHostLeft(true);
+        statusRef.current = "gameover";
+        setStatus("gameover");
+      }
+    });
   };
 
   const changeSelectedLevel = (delta: number) => {
     setSelectedLevel((l) => Math.max(1, Math.min(maxUnlockedLevel, l + delta)));
+  };
+
+  const handleStart = () => {
+    if (lobbyMode === "solo") startSolo(selectedLevel);
+    else if (lobbyMode === "host") hostStartOrRestart(selectedLevel);
+  };
+
+  const handleNextLevel = () => {
+    if (netRole === "host") hostStartOrRestart(selectedLevel + 1);
+    else startSolo(selectedLevel + 1);
+  };
+
+  const handleRetry = () => {
+    if (netRole === "host") hostStartOrRestart(selectedLevel);
+    else startSolo(selectedLevel);
+  };
+
+  const backToLevelSelect = () => {
+    resetLobby();
+    setLobbyMode("solo");
+    setNetRole("solo");
+    netRoleRef.current = "solo";
+    setStatus("ready");
   };
 
   useEffect(() => {
@@ -480,12 +699,21 @@ export default function FighterGame() {
       canvas.style.height = `${height}px`;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       if (stateRef.current) {
-        stateRef.current.width = width;
-        stateRef.current.height = height;
-        stateRef.current.player.x = clamp(stateRef.current.player.x, PLAYER_RADIUS, width - PLAYER_RADIUS);
-        stateRef.current.player.y = clamp(stateRef.current.player.y, PLAYER_RADIUS, height - PLAYER_RADIUS);
+        const s = stateRef.current;
+        const scaleX = width / s.width;
+        const scaleY = height / s.height;
+        s.width = width;
+        s.height = height;
+        for (const pl of s.players) {
+          pl.x = clamp(pl.x * scaleX, PLAYER_RADIUS, width - PLAYER_RADIUS);
+          pl.y = clamp(pl.y * scaleY, PLAYER_RADIUS, height - PLAYER_RADIUS);
+          pl.targetX = pl.x;
+          pl.targetY = pl.y;
+        }
       } else {
-        stateRef.current = makeInitialState(width, height, selectedLevelRef.current);
+        stateRef.current = makeInitialState(width, height, selectedLevelRef.current, [
+          localIdRef.current || "local",
+        ]);
       }
     };
     resize();
@@ -498,14 +726,22 @@ export default function FighterGame() {
       return { x: clientX - rect.left, y: clientY - rect.top };
     };
 
+    const getLocalPlayer = (s: GameState) =>
+      s.players.find((pl) => pl.id === localIdRef.current) ?? s.players[0];
+
     const onPointerDown = (e: PointerEvent) => {
       const s = stateRef.current;
       if (!s) return;
       s.pointerDown = true;
       const p = getLocalPoint(e.clientX, e.clientY);
-      s.player.targetX = p.x;
-      s.player.targetY = p.y;
-      if (statusRef.current === "ready") startLevel(selectedLevelRef.current);
+      const pl = getLocalPlayer(s);
+      if (pl) {
+        pl.targetX = p.x;
+        pl.targetY = p.y;
+      }
+      if (statusRef.current === "ready" && lobbyModeRef.current === "solo") {
+        startSolo(selectedLevelRef.current);
+      }
       e.preventDefault();
     };
     const onPointerMove = (e: PointerEvent) => {
@@ -513,8 +749,11 @@ export default function FighterGame() {
       if (!s) return;
       if (e.pointerType === "mouse" || s.pointerDown) {
         const p = getLocalPoint(e.clientX, e.clientY);
-        s.player.targetX = p.x;
-        s.player.targetY = p.y;
+        const pl = getLocalPlayer(s);
+        if (pl) {
+          pl.targetX = p.x;
+          pl.targetY = p.y;
+        }
       }
     };
     const onPointerUp = () => {
@@ -532,7 +771,9 @@ export default function FighterGame() {
       if (keys.includes(e.key)) {
         e.preventDefault();
         stateRef.current?.keys.add(e.key.toLowerCase());
-        if (statusRef.current === "ready") startLevel(selectedLevelRef.current);
+        if (statusRef.current === "ready" && lobbyModeRef.current === "solo") {
+          startSolo(selectedLevelRef.current);
+        }
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
@@ -551,17 +792,117 @@ export default function FighterGame() {
       lastTimeRef.current = now;
       const s = stateRef.current;
       if (s) {
-        if (statusRef.current === "playing") update(s, dt);
+        if (netRoleRef.current === "ally") {
+          if (statusRef.current === "playing") {
+            applySnapshot(s, latestSnapshotRef.current);
+            inputAccumRef.current += dt;
+            if (inputAccumRef.current >= INPUT_SEND_INTERVAL) {
+              inputAccumRef.current = 0;
+              const pl = getLocalPlayer(s);
+              if (pl && channelRef.current) {
+                channelRef.current.trigger("client-input", {
+                  id: localIdRef.current,
+                  x: pl.targetX,
+                  y: pl.targetY,
+                } satisfies InputMessage);
+              }
+            }
+          }
+        } else {
+          if (statusRef.current === "playing") {
+            if (netRoleRef.current === "host") {
+              for (const [id, target] of pendingInputsRef.current) {
+                const pl = s.players.find((p) => p.id === id);
+                if (pl) {
+                  pl.targetX = target.x;
+                  pl.targetY = target.y;
+                }
+              }
+            }
+            update(s, dt);
+          }
+          // Keep broadcasting after the round ends too, so a host transitioning
+          // straight from "playing" to "levelcomplete"/"gameover" in the same
+          // tick still reliably delivers that final status to allies.
+          if (netRoleRef.current === "host" && channelRef.current && statusRef.current !== "ready") {
+            broadcastAccumRef.current += dt;
+            if (broadcastAccumRef.current >= BROADCAST_INTERVAL) {
+              broadcastAccumRef.current = 0;
+              channelRef.current.trigger("client-state", buildSnapshot(s, statusRef.current));
+            }
+          }
+        }
         render(ctx, s, statusRef.current);
       }
       rafRef.current = requestAnimationFrame(loop);
     };
 
+    function applySnapshot(s: GameState, snap: NetSnapshot | null) {
+      if (!snap) return;
+      const scaleX = s.width / snap.width;
+      const scaleY = s.height / snap.height;
+      s.level = snap.level;
+      s.levelDuration = snap.levelDuration;
+      s.elapsed = snap.elapsed;
+      s.players = snap.players.map((np) => ({
+        id: np.id,
+        x: np.x * scaleX,
+        y: np.y * scaleY,
+        targetX: np.x * scaleX,
+        targetY: np.y * scaleY,
+        invuln: np.invuln,
+        fireTimer: 0,
+      }));
+      s.enemies = snap.enemies.map((ne) => ({
+        x: ne.x * scaleX,
+        y: ne.y * scaleY,
+        vy: 0,
+        phase: ne.phase,
+        amp: 0,
+        scale: ne.scale,
+        fireTimer: 1,
+        bombTimer: 1,
+      }));
+      s.missiles = snap.missiles.map((nm) => ({
+        x: nm.x * scaleX,
+        y: nm.y * scaleY,
+        vx: nm.vx,
+        vy: nm.vy,
+      }));
+      s.bombs = snap.bombs.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: 0, rot: nb.rot }));
+      s.bullets = snap.bullets.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: 0 }));
+
+      setScore((prev) => (prev !== snap.score ? snap.score : prev));
+      setLives((prev) => (prev !== snap.lives ? snap.lives : prev));
+      if (snap.status !== statusRef.current) {
+        statusRef.current = snap.status;
+        setStatus(snap.status);
+      }
+    }
+
+    function buildSnapshot(s: GameState, currentStatus: Status): NetSnapshot {
+      return {
+        status: currentStatus === "ready" ? "playing" : currentStatus,
+        width: s.width,
+        height: s.height,
+        level: s.level,
+        levelDuration: s.levelDuration,
+        elapsed: s.elapsed,
+        score: scoreRef.current,
+        lives: livesRef.current,
+        players: s.players.map((pl) => ({ id: pl.id, x: pl.x, y: pl.y, invuln: pl.invuln })),
+        enemies: s.enemies.map((en) => ({ x: en.x, y: en.y, scale: en.scale, phase: en.phase })),
+        missiles: s.missiles.map((m) => ({ x: m.x, y: m.y, vx: m.vx, vy: m.vy })),
+        bombs: s.bombs.map((b) => ({ x: b.x, y: b.y, rot: b.rot })),
+        bullets: s.bullets.map((b) => ({ x: b.x, y: b.y })),
+      };
+    }
+
     function update(s: GameState, dt: number) {
       s.elapsed += dt;
-      const p = s.player;
 
-      // keyboard movement overrides pointer target for this frame
+      // keyboard movement overrides pointer target for this frame, applied
+      // to whichever player entity is this device's own (host or solo).
       const speed = 320;
       let kx = 0;
       let ky = 0;
@@ -569,19 +910,22 @@ export default function FighterGame() {
       if (s.keys.has("arrowright") || s.keys.has("d")) kx += 1;
       if (s.keys.has("arrowup") || s.keys.has("w")) ky -= 1;
       if (s.keys.has("arrowdown") || s.keys.has("s")) ky += 1;
-      if (kx !== 0 || ky !== 0) {
+      const localPlayer = s.players.find((p) => p.id === localIdRef.current);
+      if (localPlayer && (kx !== 0 || ky !== 0)) {
         const len = Math.hypot(kx, ky) || 1;
-        p.x = clamp(p.x + (kx / len) * speed * dt, PLAYER_RADIUS, s.width - PLAYER_RADIUS);
-        p.y = clamp(p.y + (ky / len) * speed * dt, PLAYER_RADIUS, s.height - PLAYER_RADIUS);
-        p.targetX = p.x;
-        p.targetY = p.y;
-      } else {
-        p.targetX = clamp(p.targetX, PLAYER_RADIUS, s.width - PLAYER_RADIUS);
-        p.targetY = clamp(p.targetY, PLAYER_RADIUS, s.height - PLAYER_RADIUS);
-        p.x += (p.targetX - p.x) * Math.min(1, dt * 10);
-        p.y += (p.targetY - p.y) * Math.min(1, dt * 10);
+        localPlayer.x = clamp(localPlayer.x + (kx / len) * speed * dt, PLAYER_RADIUS, s.width - PLAYER_RADIUS);
+        localPlayer.y = clamp(localPlayer.y + (ky / len) * speed * dt, PLAYER_RADIUS, s.height - PLAYER_RADIUS);
+        localPlayer.targetX = localPlayer.x;
+        localPlayer.targetY = localPlayer.y;
       }
-      if (p.invuln > 0) p.invuln -= dt;
+
+      for (const pl of s.players) {
+        pl.targetX = clamp(pl.targetX, PLAYER_RADIUS, s.width - PLAYER_RADIUS);
+        pl.targetY = clamp(pl.targetY, PLAYER_RADIUS, s.height - PLAYER_RADIUS);
+        pl.x += (pl.targetX - pl.x) * Math.min(1, dt * 10);
+        pl.y += (pl.targetY - pl.y) * Math.min(1, dt * 10);
+        if (pl.invuln > 0) pl.invuln -= dt;
+      }
 
       // clouds
       for (const c of s.clouds) {
@@ -592,12 +936,14 @@ export default function FighterGame() {
         }
       }
 
-      // auto-fire
-      s.fireTimer -= dt;
-      if (s.fireTimer <= 0) {
-        s.fireTimer = 0.18;
-        s.bullets.push({ x: p.x - 7, y: p.y - 14, vy: -560 });
-        s.bullets.push({ x: p.x + 7, y: p.y - 14, vy: -560 });
+      // auto-fire, one volley per player
+      for (const pl of s.players) {
+        pl.fireTimer -= dt;
+        if (pl.fireTimer <= 0) {
+          pl.fireTimer = 0.18;
+          s.bullets.push({ x: pl.x - 7, y: pl.y - 14, vy: -560 });
+          s.bullets.push({ x: pl.x + 7, y: pl.y - 14, vy: -560 });
+        }
       }
       for (const b of s.bullets) b.y += b.vy * dt;
       s.bullets = s.bullets.filter((b) => b.y > -20);
@@ -607,16 +953,19 @@ export default function FighterGame() {
       s.spawnTimer -= dt;
       if (s.spawnTimer <= 0) {
         s.spawnTimer = clamp(1.15 - difficulty * 0.5, 0.22, 1.15) + Math.random() * 0.3;
-        s.enemies.push({
-          x: 30 + Math.random() * (s.width - 60),
-          y: -30,
-          vy: 55 + Math.random() * 35 + Math.min(difficulty, 8) * 40,
-          phase: Math.random() * Math.PI * 2,
-          amp: 20 + Math.random() * 40,
-          scale: 0.85 + Math.random() * 0.35,
-          fireTimer: 1.8 + Math.random() * 1.8,
-          bombTimer: 1.2 + Math.random() * 2.2,
-        });
+        // One extra enemy per teammate so co-op stays a real challenge.
+        for (let i = 0; i < s.players.length; i++) {
+          s.enemies.push({
+            x: 30 + Math.random() * (s.width - 60),
+            y: -30 - i * 40,
+            vy: 55 + Math.random() * 35 + Math.min(difficulty, 8) * 40,
+            phase: Math.random() * Math.PI * 2,
+            amp: 20 + Math.random() * 40,
+            scale: 0.85 + Math.random() * 0.35,
+            fireTimer: 1.8 + Math.random() * 1.8,
+            bombTimer: 1.2 + Math.random() * 2.2,
+          });
+        }
       }
 
       for (const en of s.enemies) {
@@ -624,10 +973,19 @@ export default function FighterGame() {
         en.phase += dt * 1.6;
         en.x = clamp(en.x + Math.sin(en.phase) * en.amp * dt * 0.6, 20, s.width - 20);
         en.fireTimer -= dt;
-        if (en.fireTimer <= 0 && en.y > 10 && en.y < s.height - 60) {
+        if (en.fireTimer <= 0 && en.y > 10 && en.y < s.height - 60 && s.players.length > 0) {
           en.fireTimer = clamp(2.2 - difficulty * 0.3, 0.6, 2.2) + Math.random() * 1.6;
-          const dx = p.x - en.x;
-          const dy = p.y - en.y;
+          let nearest = s.players[0];
+          let nearestD = dist2(en.x, en.y, nearest.x, nearest.y);
+          for (const pl of s.players) {
+            const d = dist2(en.x, en.y, pl.x, pl.y);
+            if (d < nearestD) {
+              nearest = pl;
+              nearestD = d;
+            }
+          }
+          const dx = nearest.x - en.x;
+          const dy = nearest.y - en.y;
           const len = Math.hypot(dx, dy) || 1;
           s.missiles.push({
             x: en.x,
@@ -645,9 +1003,20 @@ export default function FighterGame() {
       s.enemies = s.enemies.filter((en) => en.y < s.height + 40);
 
       for (const m of s.missiles) {
-        const dx = p.x - m.x;
-        // gentle homing so missiles are threatening but still dodgeable
-        m.vx += clamp(dx, -1, 1) * 16 * dt;
+        let nearest = s.players[0];
+        if (nearest) {
+          let nearestD = dist2(m.x, m.y, nearest.x, nearest.y);
+          for (const pl of s.players) {
+            const d = dist2(m.x, m.y, pl.x, pl.y);
+            if (d < nearestD) {
+              nearest = pl;
+              nearestD = d;
+            }
+          }
+          const dx = nearest.x - m.x;
+          // gentle homing so missiles are threatening but still dodgeable
+          m.vx += clamp(dx, -1, 1) * 16 * dt;
+        }
         m.x += m.vx * dt;
         m.y += m.vy * dt;
       }
@@ -679,12 +1048,13 @@ export default function FighterGame() {
       if (deadEnemies.size) s.enemies = s.enemies.filter((en) => !deadEnemies.has(en));
       if (deadBullets.size) s.bullets = s.bullets.filter((b) => !deadBullets.has(b));
 
-      // player collisions
-      if (p.invuln <= 0) {
+      // player collisions — shared lives pool across the whole team
+      for (const pl of s.players) {
+        if (pl.invuln > 0) continue;
         let hitBy: "missile" | "bomb" | "enemy" | null = null;
         for (const m of s.missiles) {
           if (
-            dist2(p.x, p.y, m.x, m.y) <
+            dist2(pl.x, pl.y, m.x, m.y) <
             (PLAYER_HIT_RADIUS + MISSILE_HIT_RADIUS) * (PLAYER_HIT_RADIUS + MISSILE_HIT_RADIUS)
           ) {
             hitBy = "missile";
@@ -695,7 +1065,7 @@ export default function FighterGame() {
         if (!hitBy) {
           for (const bm of s.bombs) {
             if (
-              dist2(p.x, p.y, bm.x, bm.y) <
+              dist2(pl.x, pl.y, bm.x, bm.y) <
               (PLAYER_HIT_RADIUS + BOMB_HIT_RADIUS) * (PLAYER_HIT_RADIUS + BOMB_HIT_RADIUS)
             ) {
               hitBy = "bomb";
@@ -707,7 +1077,7 @@ export default function FighterGame() {
         if (!hitBy) {
           for (const en of s.enemies) {
             const r = PLAYER_HIT_RADIUS + ENEMY_HIT_RADIUS * en.scale;
-            if (dist2(p.x, p.y, en.x, en.y) < r * r) {
+            if (dist2(pl.x, pl.y, en.x, en.y) < r * r) {
               hitBy = "enemy";
               s.enemies = s.enemies.filter((ee) => ee !== en);
               break;
@@ -715,8 +1085,8 @@ export default function FighterGame() {
           }
         }
         if (hitBy) {
-          p.invuln = INVULN_TIME;
-          spawnExplosion(s.particles, p.x, p.y, ["#8fd3ff", "#ffffff", "#ff7a3c"], 24);
+          pl.invuln = INVULN_TIME;
+          spawnExplosion(s.particles, pl.x, pl.y, ["#8fd3ff", "#ffffff", "#ff7a3c"], 24);
           setLives((lv) => {
             const next = lv - 1;
             if (next <= 0) {
@@ -820,14 +1190,16 @@ export default function FighterGame() {
         c.restore();
       }
 
-      // player
-      const p = s.player;
-      const flashHidden = p.invuln > 0 && Math.floor(p.invuln * 10) % 2 === 0;
-      if (currentStatus !== "gameover" && !flashHidden) {
-        c.save();
-        c.translate(p.x, p.y);
-        drawJet(c, 1, Math.abs(Math.sin(s.elapsed * 22)), PLAYER_SCHEME);
-        c.restore();
+      // players
+      if (currentStatus !== "gameover") {
+        s.players.forEach((pl, i) => {
+          const flashHidden = pl.invuln > 0 && Math.floor(pl.invuln * 10) % 2 === 0;
+          if (flashHidden) return;
+          c.save();
+          c.translate(pl.x, pl.y);
+          drawJet(c, 1, Math.abs(Math.sin(s.elapsed * 22)), PLAYER_SCHEMES[i % PLAYER_SCHEMES.length]);
+          c.restore();
+        });
       }
 
       // particles
@@ -856,7 +1228,17 @@ export default function FighterGame() {
       window.removeEventListener("keyup", onKeyUp);
       document.removeEventListener("visibilitychange", onVisibility);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    return () => {
+      if (roomCode) leaveRoom(roomCode);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const isAlly = netRole === "ally";
 
   return (
     <div
@@ -877,7 +1259,7 @@ export default function FighterGame() {
           </div>
         </div>
         <div className="flex gap-1.5 rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
-          {Array.from({ length: 3 }, (_, i) => (
+          {Array.from({ length: maxLives }, (_, i) => (
             <span
               key={i}
               className={`text-lg leading-none ${i < lives ? "opacity-100" : "opacity-25"}`}
@@ -889,47 +1271,120 @@ export default function FighterGame() {
       </div>
 
       {status === "ready" && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-5 bg-black/55 px-6 text-center text-white font-sans">
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 overflow-y-auto bg-black/55 px-6 py-8 text-center text-white font-sans">
           <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight">Sky Fighter</h1>
           <p className="max-w-xs text-sm sm:text-base text-white/80">
             Drag or move your mouse to steer. Your jet auto-fires — dodge homing missiles and falling bombs, and
             shoot down every plane you can.
           </p>
 
-          <div className="flex items-center gap-4">
-            <button
-              onClick={() => changeSelectedLevel(-1)}
-              disabled={selectedLevel <= 1}
-              aria-label="Previous level"
-              className="flex h-10 w-10 items-center justify-center rounded-full bg-white/15 text-xl font-bold disabled:opacity-30"
-            >
-              ‹
-            </button>
-            <div className="min-w-[7rem]">
-              <div className="text-xs uppercase tracking-wide text-white/60">Level</div>
-              <div className="text-2xl font-extrabold tabular-nums">{selectedLevel}</div>
-            </div>
-            <button
-              onClick={() => changeSelectedLevel(1)}
-              disabled={selectedLevel >= maxUnlockedLevel}
-              aria-label="Next level"
-              className="flex h-10 w-10 items-center justify-center rounded-full bg-white/15 text-xl font-bold disabled:opacity-30"
-            >
-              ›
-            </button>
+          <div className="flex gap-2 rounded-full bg-white/10 p-1 text-sm">
+            {(["solo", "host", "join"] as LobbyMode[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => selectLobbyMode(m)}
+                className={`rounded-full px-4 py-1.5 font-semibold transition-colors ${
+                  lobbyMode === m ? "bg-red-600" : "text-white/70"
+                }`}
+              >
+                {m === "solo" ? "Solo" : m === "host" ? "Host Co-op" : "Join Co-op"}
+              </button>
+            ))}
           </div>
-          <p className="text-xs text-white/60">
-            Survive {formatTime(levelSurviveDuration(selectedLevel))} to clear this level.
-          </p>
+
+          {lobbyMode !== "join" && (
+            <>
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={() => changeSelectedLevel(-1)}
+                  disabled={selectedLevel <= 1}
+                  aria-label="Previous level"
+                  className="flex h-10 w-10 items-center justify-center rounded-full bg-white/15 text-xl font-bold disabled:opacity-30"
+                >
+                  ‹
+                </button>
+                <div className="min-w-[7rem]">
+                  <div className="text-xs uppercase tracking-wide text-white/60">Level</div>
+                  <div className="text-2xl font-extrabold tabular-nums">{selectedLevel}</div>
+                </div>
+                <button
+                  onClick={() => changeSelectedLevel(1)}
+                  disabled={selectedLevel >= maxUnlockedLevel}
+                  aria-label="Next level"
+                  className="flex h-10 w-10 items-center justify-center rounded-full bg-white/15 text-xl font-bold disabled:opacity-30"
+                >
+                  ›
+                </button>
+              </div>
+              <p className="text-xs text-white/60">
+                Survive {formatTime(levelSurviveDuration(selectedLevel))} to clear this level.
+              </p>
+            </>
+          )}
+
+          {lobbyMode === "host" && (
+            <div className="flex flex-col items-center gap-1.5 rounded-xl bg-white/10 px-4 py-3">
+              {connStatus === "idle" && (
+                <button
+                  onClick={hostRoom}
+                  className="rounded-full bg-white/20 px-5 py-2 text-sm font-semibold"
+                >
+                  Create Room
+                </button>
+              )}
+              {connStatus === "connecting" && <p className="text-sm">Creating room…</p>}
+              {connStatus === "connected" && (
+                <>
+                  <p className="text-xs text-white/60">Share this code with up to 2 allies</p>
+                  <p className="text-3xl font-extrabold tracking-widest tabular-nums">{roomCode}</p>
+                  <p className="text-xs text-white/70">
+                    {teammateIds.length === 0
+                      ? "Waiting for allies to join…"
+                      : `${teammateIds.length} ${teammateIds.length === 1 ? "ally" : "allies"} connected`}
+                  </p>
+                </>
+              )}
+              {connStatus === "error" && <p className="text-sm text-red-200">{connError}</p>}
+            </div>
+          )}
+
+          {lobbyMode === "join" && (
+            <div className="flex flex-col items-center gap-2 rounded-xl bg-white/10 px-4 py-3">
+              <p className="text-xs text-white/60">Enter your host&apos;s 6-digit room code</p>
+              <input
+                value={joinCodeInput}
+                onChange={(e) => setJoinCodeInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                inputMode="numeric"
+                placeholder="000000"
+                className="w-40 rounded-lg bg-white/90 px-3 py-2 text-center text-xl font-bold tracking-widest text-black tabular-nums"
+              />
+              {connStatus !== "connected" && (
+                <button
+                  onClick={() => joinRoom(joinCodeInput)}
+                  className="rounded-full bg-white/20 px-5 py-2 text-sm font-semibold"
+                >
+                  Join
+                </button>
+              )}
+              {connStatus === "connecting" && <p className="text-sm">Connecting…</p>}
+              {connStatus === "connected" && (
+                <p className="text-sm text-green-200">Connected! Waiting for host to start…</p>
+              )}
+              {connStatus === "error" && <p className="text-sm text-red-200">{connError}</p>}
+            </div>
+          )}
 
           {best > 0 && <p className="text-xs text-white/60">Best score: {best}</p>}
-          <button
-            onClick={() => startLevel(selectedLevel)}
-            className="mt-1 rounded-full bg-red-600 px-8 py-3 text-base font-bold shadow-lg shadow-red-900/40 active:scale-95 transition-transform"
-          >
-            Start Level {selectedLevel}
-          </button>
-          <p className="text-xs text-white/50">Arrow keys / WASD also work on desktop</p>
+
+          {(lobbyMode === "solo" || (lobbyMode === "host" && connStatus === "connected")) && (
+            <button
+              onClick={handleStart}
+              className="mt-1 rounded-full bg-red-600 px-8 py-3 text-base font-bold shadow-lg shadow-red-900/40 active:scale-95 transition-transform"
+            >
+              Start Level {selectedLevel}
+            </button>
+          )}
+          {lobbyMode === "solo" && <p className="text-xs text-white/50">Arrow keys / WASD also work on desktop</p>}
         </div>
       )}
 
@@ -939,38 +1394,42 @@ export default function FighterGame() {
           <p className="text-lg">
             Score: <span className="font-bold">{score}</span>
           </p>
-          <button
-            onClick={() => startLevel(selectedLevel + 1)}
-            className="mt-1 rounded-full bg-red-600 px-8 py-3 text-base font-bold shadow-lg shadow-red-900/40 active:scale-95 transition-transform"
-          >
-            Next Level
-          </button>
-          <button
-            onClick={() => setStatus("ready")}
-            className="text-sm text-white/70 underline underline-offset-2"
-          >
-            Level Select
-          </button>
+          {isAlly ? (
+            <p className="text-sm text-white/70">Waiting for host to start the next level…</p>
+          ) : (
+            <>
+              <button
+                onClick={handleNextLevel}
+                className="mt-1 rounded-full bg-red-600 px-8 py-3 text-base font-bold shadow-lg shadow-red-900/40 active:scale-95 transition-transform"
+              >
+                Next Level
+              </button>
+              <button onClick={backToLevelSelect} className="text-sm text-white/70 underline underline-offset-2">
+                Level Select
+              </button>
+            </>
+          )}
         </div>
       )}
 
       {status === "gameover" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/65 px-6 text-center text-white font-sans">
-          <h2 className="text-3xl font-extrabold">Shot Down!</h2>
+          <h2 className="text-3xl font-extrabold">{isAlly && hostLeft ? "Host Disconnected" : "Shot Down!"}</h2>
           <p className="text-lg">
             Level {selectedLevel} · Score: <span className="font-bold">{score}</span>
           </p>
           <p className="text-sm text-white/70">Best: {best}</p>
-          <button
-            onClick={() => startLevel(selectedLevel)}
-            className="mt-1 rounded-full bg-red-600 px-8 py-3 text-base font-bold shadow-lg shadow-red-900/40 active:scale-95 transition-transform"
-          >
-            Retry Level {selectedLevel}
-          </button>
-          <button
-            onClick={() => setStatus("ready")}
-            className="text-sm text-white/70 underline underline-offset-2"
-          >
+          {isAlly ? (
+            <p className="text-sm text-white/70">Waiting for host…</p>
+          ) : (
+            <button
+              onClick={handleRetry}
+              className="mt-1 rounded-full bg-red-600 px-8 py-3 text-base font-bold shadow-lg shadow-red-900/40 active:scale-95 transition-transform"
+            >
+              Retry Level {selectedLevel}
+            </button>
+          )}
+          <button onClick={backToLevelSelect} className="text-sm text-white/70 underline underline-offset-2">
             Level Select
           </button>
         </div>
