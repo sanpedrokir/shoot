@@ -1370,7 +1370,7 @@ export default function FighterGame() {
                   lobbyMode === m ? "bg-red-600" : "text-white/70"
                 }`}
               >
-                {m === "solo" ? "Solo" : m === "host" ? "Host Co-op" : "Join Co-op"}
+                {m === "solo" ? "Solo" : m === "host" ? "Get Ally" : "Join Ally"}
               </button>
             ))}
           </div>
@@ -1394,7 +1394,7 @@ export default function FighterGame() {
                   onClick={hostRoom}
                   className="rounded-full bg-white/20 px-5 py-2 text-sm font-semibold"
                 >
-                  Create Room
+                  Invite Ally
                 </button>
               )}
               {connStatus === "connecting" && <p className="text-sm">Creating room…</p>}
