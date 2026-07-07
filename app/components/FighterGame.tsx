@@ -80,8 +80,8 @@ const MISSILE_HIT_RADIUS = 3.5;
 const BOMB_HIT_RADIUS = 4.5;
 const INVULN_TIME = 2.2;
 const GRAVITY = 130;
-const BROADCAST_INTERVAL = 1 / 15;
-const INPUT_SEND_INTERVAL = 1 / 15;
+const BROADCAST_INTERVAL = 1 / 24;
+const INPUT_SEND_INTERVAL = 1 / 24;
 
 // Difficulty grows with the log of the level so early stages ramp up fast
 // while the long tail (toward level 1000 and beyond) keeps climbing but
@@ -135,6 +135,43 @@ function makeInitialState(width: number, height: number, level: number, playerId
 function clamp(v: number, lo: number, hi: number) {
   return Math.min(hi, Math.max(lo, v));
 }
+
+function keyboardVector(keys: Set<string>): { kx: number; ky: number } {
+  let kx = 0;
+  let ky = 0;
+  if (keys.has("arrowleft") || keys.has("a")) kx -= 1;
+  if (keys.has("arrowright") || keys.has("d")) kx += 1;
+  if (keys.has("arrowup") || keys.has("w")) ky -= 1;
+  if (keys.has("arrowdown") || keys.has("s")) ky += 1;
+  return { kx, ky };
+}
+
+// Shared by the host/solo simulation and the ally's local prediction so both
+// move a plane toward a target identically.
+function stepPlayerPosition(
+  pl: { x: number; y: number; targetX: number; targetY: number },
+  keys: Set<string>,
+  dt: number,
+  width: number,
+  height: number
+) {
+  const { kx, ky } = keyboardVector(keys);
+  if (kx !== 0 || ky !== 0) {
+    const speed = 320;
+    const len = Math.hypot(kx, ky) || 1;
+    pl.x = clamp(pl.x + (kx / len) * speed * dt, PLAYER_RADIUS, width - PLAYER_RADIUS);
+    pl.y = clamp(pl.y + (ky / len) * speed * dt, PLAYER_RADIUS, height - PLAYER_RADIUS);
+    pl.targetX = pl.x;
+    pl.targetY = pl.y;
+  } else {
+    pl.targetX = clamp(pl.targetX, PLAYER_RADIUS, width - PLAYER_RADIUS);
+    pl.targetY = clamp(pl.targetY, PLAYER_RADIUS, height - PLAYER_RADIUS);
+    pl.x += (pl.targetX - pl.x) * Math.min(1, dt * 10);
+    pl.y += (pl.targetY - pl.y) * Math.min(1, dt * 10);
+  }
+}
+
+const NO_KEYS = new Set<string>();
 
 function formatTime(totalSeconds: number) {
   const whole = Math.max(0, Math.floor(totalSeconds));
@@ -486,6 +523,12 @@ export default function FighterGame() {
   const broadcastAccumRef = useRef(0);
   const inputAccumRef = useRef(0);
   const latestSnapshotRef = useRef<NetSnapshot | null>(null);
+  // The ally's own desired position, tracked separately from GameState.players
+  // because that array gets wholesale-replaced by every incoming network
+  // snapshot. localPosRef is the ally's client-side-predicted plane position;
+  // localTargetRef is what pointer/keyboard input is steering toward.
+  const localTargetRef = useRef({ x: 0, y: 0 });
+  const localPosRef = useRef<{ x: number; y: number } | null>(null);
 
   const [status, setStatus] = useState<Status>("ready");
   const [score, setScore] = useState(0);
@@ -568,6 +611,11 @@ export default function FighterGame() {
     const width = el?.clientWidth ?? 360;
     const height = el?.clientHeight ?? 640;
     stateRef.current = makeInitialState(width, height, level, playerIds);
+    localPosRef.current = null;
+    const spawnedLocal = stateRef.current.players.find((p) => p.id === localIdRef.current);
+    if (spawnedLocal) {
+      localTargetRef.current = { x: spawnedLocal.x, y: spawnedLocal.y };
+    }
     setSelectedLevel(level);
     setScore(0);
     scoreRef.current = 0;
@@ -734,6 +782,7 @@ export default function FighterGame() {
       if (!s) return;
       s.pointerDown = true;
       const p = getLocalPoint(e.clientX, e.clientY);
+      localTargetRef.current = p;
       const pl = getLocalPlayer(s);
       if (pl) {
         pl.targetX = p.x;
@@ -749,6 +798,7 @@ export default function FighterGame() {
       if (!s) return;
       if (e.pointerType === "mouse" || s.pointerDown) {
         const p = getLocalPoint(e.clientX, e.clientY);
+        localTargetRef.current = p;
         const pl = getLocalPlayer(s);
         if (pl) {
           pl.targetX = p.x;
@@ -795,15 +845,40 @@ export default function FighterGame() {
         if (netRoleRef.current === "ally") {
           if (statusRef.current === "playing") {
             applySnapshot(s, latestSnapshotRef.current);
+
+            // Client-side prediction: move our own plane locally & instantly
+            // instead of waiting a full network round trip (input -> host ->
+            // broadcast -> us) before we see it respond. applySnapshot just
+            // overwrote every player from the host's data, so immediately
+            // override our own entry with the locally-predicted position.
+            const localPl = s.players.find((p) => p.id === localIdRef.current);
+            if (localPl) {
+              if (!localPosRef.current) {
+                localPosRef.current = { x: localPl.x, y: localPl.y };
+              }
+              const stepObj = {
+                x: localPosRef.current.x,
+                y: localPosRef.current.y,
+                targetX: localTargetRef.current.x,
+                targetY: localTargetRef.current.y,
+              };
+              stepPlayerPosition(stepObj, s.keys, dt, s.width, s.height);
+              localPosRef.current.x = stepObj.x;
+              localPosRef.current.y = stepObj.y;
+              localTargetRef.current.x = stepObj.targetX;
+              localTargetRef.current.y = stepObj.targetY;
+              localPl.x = stepObj.x;
+              localPl.y = stepObj.y;
+            }
+
             inputAccumRef.current += dt;
             if (inputAccumRef.current >= INPUT_SEND_INTERVAL) {
               inputAccumRef.current = 0;
-              const pl = getLocalPlayer(s);
-              if (pl && channelRef.current) {
+              if (channelRef.current) {
                 channelRef.current.trigger("client-input", {
                   id: localIdRef.current,
-                  x: pl.targetX,
-                  y: pl.targetY,
+                  x: localTargetRef.current.x,
+                  y: localTargetRef.current.y,
                 } satisfies InputMessage);
               }
             }
@@ -901,29 +976,12 @@ export default function FighterGame() {
     function update(s: GameState, dt: number) {
       s.elapsed += dt;
 
-      // keyboard movement overrides pointer target for this frame, applied
-      // to whichever player entity is this device's own (host or solo).
-      const speed = 320;
-      let kx = 0;
-      let ky = 0;
-      if (s.keys.has("arrowleft") || s.keys.has("a")) kx -= 1;
-      if (s.keys.has("arrowright") || s.keys.has("d")) kx += 1;
-      if (s.keys.has("arrowup") || s.keys.has("w")) ky -= 1;
-      if (s.keys.has("arrowdown") || s.keys.has("s")) ky += 1;
-      const localPlayer = s.players.find((p) => p.id === localIdRef.current);
-      if (localPlayer && (kx !== 0 || ky !== 0)) {
-        const len = Math.hypot(kx, ky) || 1;
-        localPlayer.x = clamp(localPlayer.x + (kx / len) * speed * dt, PLAYER_RADIUS, s.width - PLAYER_RADIUS);
-        localPlayer.y = clamp(localPlayer.y + (ky / len) * speed * dt, PLAYER_RADIUS, s.height - PLAYER_RADIUS);
-        localPlayer.targetX = localPlayer.x;
-        localPlayer.targetY = localPlayer.y;
-      }
-
+      // Keyboard input only ever drives this device's own player entity;
+      // everyone else (host/solo's own plane, or a relayed ally) just lerps
+      // toward whatever target position was last set for them.
       for (const pl of s.players) {
-        pl.targetX = clamp(pl.targetX, PLAYER_RADIUS, s.width - PLAYER_RADIUS);
-        pl.targetY = clamp(pl.targetY, PLAYER_RADIUS, s.height - PLAYER_RADIUS);
-        pl.x += (pl.targetX - pl.x) * Math.min(1, dt * 10);
-        pl.y += (pl.targetY - pl.y) * Math.min(1, dt * 10);
+        const keys = pl.id === localIdRef.current ? s.keys : NO_KEYS;
+        stepPlayerPosition(pl, keys, dt, s.width, s.height);
         if (pl.invuln > 0) pl.invuln -= dt;
       }
 
@@ -1381,7 +1439,7 @@ export default function FighterGame() {
               onClick={handleStart}
               className="mt-1 rounded-full bg-red-600 px-8 py-3 text-base font-bold shadow-lg shadow-red-900/40 active:scale-95 transition-transform"
             >
-              Start Level {selectedLevel}
+              Start
             </button>
           )}
           {lobbyMode === "solo" && <p className="text-xs text-white/50">Arrow keys / WASD also work on desktop</p>}
