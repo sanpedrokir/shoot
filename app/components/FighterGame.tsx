@@ -1370,7 +1370,7 @@ export default function FighterGame() {
                   lobbyMode === m ? "bg-red-600" : "text-white/70"
                 }`}
               >
-                {m === "solo" ? "Solo" : m === "host" ? "Get Ally" : "Join Ally"}
+                {m === "solo" ? "Single Player" : m === "host" ? "Get Ally" : "Join Ally"}
               </button>
             ))}
           </div>
