@@ -184,13 +184,6 @@ function stepPlayerPosition(
 
 const NO_KEYS = new Set<string>();
 
-function formatTime(totalSeconds: number) {
-  const whole = Math.max(0, Math.floor(totalSeconds));
-  const minutes = Math.floor(whole / 60);
-  const seconds = whole % 60;
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-}
-
 function dist2(ax: number, ay: number, bx: number, by: number) {
   const dx = ax - bx;
   const dy = ay - by;
@@ -522,7 +515,6 @@ export default function FighterGame() {
   const statusRef = useRef<Status>("ready");
   const rafRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
-  const timerValueRef = useRef<HTMLDivElement | null>(null);
   const selectedLevelRef = useRef(1);
   const maxUnlockedLevelRef = useRef(1);
   const lobbyModeRef = useRef<LobbyMode>("solo");
@@ -1219,9 +1211,6 @@ export default function FighterGame() {
     }
 
     function render(c: CanvasRenderingContext2D, s: GameState, currentStatus: Status) {
-      if (timerValueRef.current) {
-        timerValueRef.current.textContent = formatTime(Math.max(0, s.levelDuration - s.elapsed));
-      }
       const { width, height } = s;
       const sky = c.createLinearGradient(0, 0, 0, height);
       sky.addColorStop(0, "#155a9e");
@@ -1336,10 +1325,8 @@ export default function FighterGame() {
           <div className="text-lg font-bold tabular-nums leading-tight">{score}</div>
         </div>
         <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm text-center">
-          <div className="text-xs uppercase tracking-wide text-white/60">Level {selectedLevel}</div>
-          <div ref={timerValueRef} className="text-lg font-bold tabular-nums leading-tight">
-            0:00
-          </div>
+          <div className="text-xs uppercase tracking-wide text-white/60">Level</div>
+          <div className="text-lg font-bold tabular-nums leading-tight">{selectedLevel}</div>
         </div>
         <div className="flex gap-1.5 rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
           {Array.from({ length: maxLives }, (_, i) => (
@@ -1374,18 +1361,6 @@ export default function FighterGame() {
               </button>
             ))}
           </div>
-
-          {lobbyMode !== "join" && (
-            <>
-              <div className="min-w-[7rem] text-center">
-                <div className="text-xs uppercase tracking-wide text-white/60">Level</div>
-                <div className="text-2xl font-extrabold tabular-nums">{maxUnlockedLevel}</div>
-              </div>
-              <p className="text-xs text-white/60">
-                Survive {formatTime(levelSurviveDuration(maxUnlockedLevel))} to clear this level.
-              </p>
-            </>
-          )}
 
           {lobbyMode === "host" && (
             <div className="flex flex-col items-center gap-1.5 rounded-xl bg-white/10 px-4 py-3">
