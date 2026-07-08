@@ -678,9 +678,9 @@ export default function FighterGame() {
   };
 
   const joinRoom = (code: string) => {
-    if (!/^\d{6}$/.test(code)) {
+    if (!/^\d{3}$/.test(code)) {
       setConnStatus("error");
-      setConnError("Enter the 6-digit code your host shared.");
+      setConnError("Enter the 3-digit code your host shared.");
       return;
     }
     setRoomCode(code);
@@ -1375,12 +1375,10 @@ export default function FighterGame() {
               {connStatus === "connecting" && <p className="text-sm">Creating room…</p>}
               {connStatus === "connected" && (
                 <>
-                  <p className="text-xs text-white/60">Share this code with up to 2 allies</p>
+                  <p className="text-xs text-white/60">Share this code with your ally</p>
                   <p className="text-3xl font-extrabold tracking-widest tabular-nums">{roomCode}</p>
                   <p className="text-xs text-white/70">
-                    {teammateIds.length === 0
-                      ? "Waiting for allies to join…"
-                      : `${teammateIds.length} ${teammateIds.length === 1 ? "ally" : "allies"} connected`}
+                    {teammateIds.length === 0 ? "Waiting for ally to join…" : "Ally connected"}
                   </p>
                 </>
               )}
@@ -1390,12 +1388,12 @@ export default function FighterGame() {
 
           {lobbyMode === "join" && (
             <div className="flex flex-col items-center gap-2 rounded-xl bg-white/10 px-4 py-3">
-              <p className="text-xs text-white/60">Enter your host&apos;s 6-digit room code</p>
+              <p className="text-xs text-white/60">Enter your host&apos;s 3-digit room code</p>
               <input
                 value={joinCodeInput}
-                onChange={(e) => setJoinCodeInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                onChange={(e) => setJoinCodeInput(e.target.value.replace(/\D/g, "").slice(0, 3))}
                 inputMode="numeric"
-                placeholder="000000"
+                placeholder="000"
                 className="w-40 rounded-lg bg-white/90 px-3 py-2 text-center text-xl font-bold tracking-widest text-black tabular-nums"
               />
               {connStatus !== "connected" && (

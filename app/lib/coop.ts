@@ -1,6 +1,6 @@
 import Pusher, { type PresenceChannel } from "pusher-js";
 
-export const MAX_PLAYERS = 3;
+export const MAX_PLAYERS = 2;
 
 let pusherSingleton: Pusher | null = null;
 let clientIdSingleton: string | null = null;
@@ -39,7 +39,7 @@ export function roomChannelName(code: string): string {
 }
 
 export function generateRoomCode(): string {
-  return String(Math.floor(100000 + Math.random() * 900000));
+  return String(Math.floor(100 + Math.random() * 900));
 }
 
 export function subscribeToRoom(code: string): PresenceChannel {
