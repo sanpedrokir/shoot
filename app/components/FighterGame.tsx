@@ -1372,7 +1372,7 @@ export default function FighterGame() {
                   Invite Ally
                 </button>
               )}
-              {connStatus === "connecting" && <p className="text-sm">Creating room…</p>}
+              {connStatus === "connecting" && <p className="text-sm">Setting Up…</p>}
               {connStatus === "connected" && (
                 <>
                   <p className="text-xs text-white/60">Share this code with your ally</p>
