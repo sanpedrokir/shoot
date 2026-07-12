@@ -49,7 +49,7 @@ type Player = {
   fireTimer: number;
 };
 
-type Status = "ready" | "playing" | "levelcomplete" | "gameover";
+type Status = "ready" | "playing" | "levelcomplete" | "gameover" | "quit";
 type NetRole = "solo" | "host" | "ally";
 type LobbyMode = "solo" | "host" | "join";
 type ConnStatus = "idle" | "connecting" | "connected" | "error";
@@ -743,6 +743,12 @@ export default function FighterGame() {
     setStatus("ready");
   };
 
+  const handleQuit = () => {
+    resetLobby();
+    statusRef.current = "quit";
+    setStatus("quit");
+  };
+
   useEffect(() => {
     const container = containerRef.current;
     const canvas = canvasRef.current;
@@ -970,7 +976,7 @@ export default function FighterGame() {
 
     function buildSnapshot(s: GameState, currentStatus: Status): NetSnapshot {
       return {
-        status: currentStatus === "ready" ? "playing" : currentStatus,
+        status: currentStatus === "ready" ? "playing" : currentStatus === "quit" ? "gameover" : currentStatus,
         width: round1(s.width),
         height: round1(s.height),
         level: s.level,
@@ -1462,18 +1468,21 @@ export default function FighterGame() {
           {isAlly ? (
             <p className="text-sm text-white/70">Waiting for host to start the next level…</p>
           ) : (
-            <>
-              <button
-                onClick={handleNextLevel}
-                className="mt-1 rounded-full bg-red-600 px-8 py-3 text-base font-bold shadow-lg shadow-red-900/40 active:scale-95 transition-transform"
-              >
-                Next Level
-              </button>
-              <button onClick={backToLevelSelect} className="text-sm text-white/70 underline underline-offset-2">
-                Level Select
-              </button>
-            </>
+            <button
+              onClick={handleNextLevel}
+              className="mt-1 rounded-full bg-red-600 px-8 py-3 text-base font-bold shadow-lg shadow-red-900/40 active:scale-95 transition-transform"
+            >
+              Next Level
+            </button>
           )}
+          <div className="flex gap-4">
+            <button onClick={backToLevelSelect} className="text-sm text-white/70 underline underline-offset-2">
+              Level Select
+            </button>
+            <button onClick={handleQuit} className="text-sm text-white/70 underline underline-offset-2">
+              Quit Game
+            </button>
+          </div>
         </div>
       )}
 
@@ -1494,8 +1503,29 @@ export default function FighterGame() {
               Retry Level {selectedLevel}
             </button>
           )}
-          <button onClick={backToLevelSelect} className="text-sm text-white/70 underline underline-offset-2">
-            Level Select
+          <div className="flex gap-4">
+            <button onClick={backToLevelSelect} className="text-sm text-white/70 underline underline-offset-2">
+              Level Select
+            </button>
+            <button onClick={handleQuit} className="text-sm text-white/70 underline underline-offset-2">
+              Quit Game
+            </button>
+          </div>
+        </div>
+      )}
+
+      {status === "quit" && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/65 px-6 text-center text-white font-sans">
+          <h2 className="text-3xl font-extrabold">Thanks for Playing!</h2>
+          <p className="text-lg">
+            Level {selectedLevel} · Score: <span className="font-bold">{score}</span>
+          </p>
+          <p className="text-sm text-white/70">Best: {best}</p>
+          <button
+            onClick={backToLevelSelect}
+            className="mt-1 rounded-full bg-white/20 px-6 py-2.5 text-sm font-semibold"
+          >
+            Back to Menu
           </button>
         </div>
       )}
