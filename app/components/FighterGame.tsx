@@ -12,6 +12,7 @@ import {
   type StartMessage,
   type NetSnapshot,
 } from "../lib/coop";
+import AuthPanel, { type AuthUser } from "./AuthPanel";
 
 type Bullet = { x: number; y: number; vy: number };
 type Missile = { x: number; y: number; vy: number; vx: number };
@@ -569,9 +570,17 @@ export default function FighterGame() {
   const [connError, setConnError] = useState("");
   const [teammateIds, setTeammateIds] = useState<string[]>([]);
 
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const userRef = useRef<AuthUser | null>(null);
+  const [refreshLeaderboardKey, setRefreshLeaderboardKey] = useState(0);
+
   useEffect(() => {
     localIdRef.current = getClientId();
   }, []);
+
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
 
   useEffect(() => {
     statusRef.current = status;
@@ -1175,6 +1184,14 @@ export default function FighterGame() {
                   } catch {
                     // ignore
                   }
+                  if (userRef.current) {
+                    fetch("/api/score", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ score: nb, level: selectedLevelRef.current }),
+                    }).catch(() => {});
+                    setRefreshLeaderboardKey((k) => k + 1);
+                  }
                   return nb;
                 });
                 return sc;
@@ -1204,6 +1221,14 @@ export default function FighterGame() {
             window.localStorage.setItem("skyfighter-max-level", String(next));
           } catch {
             // ignore
+          }
+          if (userRef.current) {
+            fetch("/api/score", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ score: scoreRef.current, level: next }),
+            }).catch(() => {});
+            setRefreshLeaderboardKey((k) => k + 1);
           }
           return next;
         });
@@ -1413,6 +1438,8 @@ export default function FighterGame() {
           )}
 
           {best > 0 && <p className="text-xs text-white/60">Best score: {best}</p>}
+
+          <AuthPanel onUserChange={setUser} refreshLeaderboardKey={refreshLeaderboardKey} />
 
           {(lobbyMode === "solo" || (lobbyMode === "host" && connStatus === "connected")) && (
             <button
