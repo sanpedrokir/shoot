@@ -185,6 +185,13 @@ function stepPlayerPosition(
 
 const NO_KEYS = new Set<string>();
 
+function formatTime(totalSeconds: number) {
+  const whole = Math.max(0, Math.floor(totalSeconds));
+  const minutes = Math.floor(whole / 60);
+  const seconds = whole % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
 function dist2(ax: number, ay: number, bx: number, by: number) {
   const dx = ax - bx;
   const dy = ay - by;
@@ -499,13 +506,12 @@ const ENEMY_SCHEME = {
   accent: "#e0e0e0",
 };
 
-function readStoredMaxLevel(): number {
-  if (typeof window === "undefined") return 1;
+function readStoredBest(): number {
+  if (typeof window === "undefined") return 0;
   try {
-    const v = parseInt(window.localStorage.getItem("skyfighter-max-level") ?? "1", 10);
-    return Number.isFinite(v) && v >= 1 ? v : 1;
+    return parseInt(window.localStorage.getItem("skyfighter-best") ?? "0", 10) || 0;
   } catch {
-    return 1;
+    return 0;
   }
 }
 
@@ -516,8 +522,7 @@ export default function FighterGame() {
   const statusRef = useRef<Status>("ready");
   const rafRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
-  const selectedLevelRef = useRef(1);
-  const maxUnlockedLevelRef = useRef(1);
+  const timerValueRef = useRef<HTMLDivElement | null>(null);
   const lobbyModeRef = useRef<LobbyMode>("solo");
 
   const localIdRef = useRef<string>("");
@@ -551,16 +556,10 @@ export default function FighterGame() {
   useEffect(() => {
     livesRef.current = lives;
   }, [lives]);
-  const [maxUnlockedLevel, setMaxUnlockedLevel] = useState(readStoredMaxLevel);
-  const [selectedLevel, setSelectedLevel] = useState(readStoredMaxLevel);
-  const [best, setBest] = useState(() => {
-    if (typeof window === "undefined") return 0;
-    try {
-      return parseInt(window.localStorage.getItem("skyfighter-best") ?? "0", 10) || 0;
-    } catch {
-      return 0;
-    }
-  });
+  // Seeded with an SSR-safe default (matching the server-rendered markup) and
+  // synced from localStorage in a mount effect below, to avoid a hydration
+  // mismatch for returning players whose real best score differs from this.
+  const [best, setBest] = useState(0);
 
   const [lobbyMode, setLobbyMode] = useState<LobbyMode>("solo");
   const [netRole, setNetRole] = useState<NetRole>("solo");
@@ -579,20 +578,19 @@ export default function FighterGame() {
   }, []);
 
   useEffect(() => {
+    // Reads localStorage after hydration (not in the initial state) so the
+    // client's first render matches the server's SSR-safe default.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setBest(readStoredBest());
+  }, []);
+
+  useEffect(() => {
     userRef.current = user;
   }, [user]);
 
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
-
-  useEffect(() => {
-    selectedLevelRef.current = selectedLevel;
-  }, [selectedLevel]);
-
-  useEffect(() => {
-    maxUnlockedLevelRef.current = maxUnlockedLevel;
-  }, [maxUnlockedLevel]);
 
   useEffect(() => {
     lobbyModeRef.current = lobbyMode;
@@ -618,22 +616,20 @@ export default function FighterGame() {
     setLobbyMode(mode);
   };
 
-  const beginGame = (role: NetRole, playerIds: string[], level: number) => {
+  const beginGame = (role: NetRole, playerIds: string[]) => {
     netRoleRef.current = role;
     setNetRole(role);
     playerIdsRef.current = playerIds;
     setHostLeft(false);
-    selectedLevelRef.current = level;
     const el = containerRef.current;
     const width = el?.clientWidth ?? 360;
     const height = el?.clientHeight ?? 640;
-    stateRef.current = makeInitialState(width, height, level, playerIds);
+    stateRef.current = makeInitialState(width, height, 1, playerIds);
     localPosRef.current = null;
     const spawnedLocal = stateRef.current.players.find((p) => p.id === localIdRef.current);
     if (spawnedLocal) {
       localTargetRef.current = { x: spawnedLocal.x, y: spawnedLocal.y };
     }
-    setSelectedLevel(level);
     setScore(0);
     scoreRef.current = 0;
     const total = 3 + (playerIds.length - 1);
@@ -647,8 +643,8 @@ export default function FighterGame() {
     setStatus("playing");
   };
 
-  const startSolo = (level: number) => {
-    beginGame("solo", [localIdRef.current], level);
+  const startSolo = () => {
+    beginGame("solo", [localIdRef.current]);
   };
 
   const hostRoom = () => {
@@ -680,10 +676,10 @@ export default function FighterGame() {
     });
   };
 
-  const hostStartOrRestart = (level: number) => {
+  const hostStartOrRestart = () => {
     const ids = [localIdRef.current, ...teammateIds].slice(0, MAX_PLAYERS);
-    channelRef.current?.trigger("client-start", { level, playerIds: ids } satisfies StartMessage);
-    beginGame("host", ids, level);
+    channelRef.current?.trigger("client-start", { level: 1, playerIds: ids } satisfies StartMessage);
+    beginGame("host", ids);
   };
 
   const joinRoom = (code: string) => {
@@ -706,7 +702,7 @@ export default function FighterGame() {
       setConnError("Couldn't join — check the code and try again.");
     });
     channel.bind("client-start", (data: StartMessage) => {
-      beginGame("ally", data.playerIds, data.level);
+      beginGame("ally", data.playerIds);
     });
     channel.bind("client-state", (data: NetSnapshot) => {
       latestSnapshotRef.current = data;
@@ -721,21 +717,16 @@ export default function FighterGame() {
   };
 
   const handleStart = () => {
-    if (lobbyMode === "solo") startSolo(maxUnlockedLevel);
-    else if (lobbyMode === "host") hostStartOrRestart(maxUnlockedLevel);
+    if (lobbyMode === "solo") startSolo();
+    else if (lobbyMode === "host") hostStartOrRestart();
   };
 
-  const handleNextLevel = () => {
-    if (netRole === "host") hostStartOrRestart(selectedLevel + 1);
-    else startSolo(selectedLevel + 1);
+  const handlePlayAgain = () => {
+    if (netRole === "host") hostStartOrRestart();
+    else startSolo();
   };
 
-  const handleRetry = () => {
-    if (netRole === "host") hostStartOrRestart(selectedLevel);
-    else startSolo(selectedLevel);
-  };
-
-  const backToLevelSelect = () => {
+  const backToMenu = () => {
     resetLobby();
     setLobbyMode("solo");
     setNetRole("solo");
@@ -747,6 +738,13 @@ export default function FighterGame() {
     resetLobby();
     statusRef.current = "quit";
     setStatus("quit");
+  };
+
+  const handleUserChange = (u: AuthUser | null) => {
+    setUser(u);
+    if (u) {
+      setBest((b) => Math.max(b, u.highScore));
+    }
   };
 
   useEffect(() => {
@@ -778,9 +776,7 @@ export default function FighterGame() {
           pl.targetY = pl.y;
         }
       } else {
-        stateRef.current = makeInitialState(width, height, maxUnlockedLevelRef.current, [
-          localIdRef.current || "local",
-        ]);
+        stateRef.current = makeInitialState(width, height, 1, [localIdRef.current || "local"]);
       }
     };
     resize();
@@ -808,7 +804,7 @@ export default function FighterGame() {
         pl.targetY = p.y;
       }
       if (statusRef.current === "ready" && lobbyModeRef.current === "solo") {
-        startSolo(maxUnlockedLevelRef.current);
+        startSolo();
       }
       e.preventDefault();
     };
@@ -841,7 +837,7 @@ export default function FighterGame() {
         e.preventDefault();
         stateRef.current?.keys.add(e.key.toLowerCase());
         if (statusRef.current === "ready" && lobbyModeRef.current === "solo") {
-          startSolo(maxUnlockedLevelRef.current);
+          startSolo();
         }
       }
     };
@@ -1194,7 +1190,7 @@ export default function FighterGame() {
                     fetch("/api/score", {
                       method: "POST",
                       headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ score: nb, level: selectedLevelRef.current }),
+                      body: JSON.stringify({ score: nb, level: 1 }),
                     }).catch(() => {});
                     setRefreshLeaderboardKey((k) => k + 1);
                   }
@@ -1221,10 +1217,10 @@ export default function FighterGame() {
       if (statusRef.current === "playing" && s.elapsed >= s.levelDuration) {
         statusRef.current = "levelcomplete";
         setStatus("levelcomplete");
-        setMaxUnlockedLevel((m) => {
-          const next = Math.max(m, s.level + 1);
+        setBest((b) => {
+          const nb = Math.max(b, scoreRef.current);
           try {
-            window.localStorage.setItem("skyfighter-max-level", String(next));
+            window.localStorage.setItem("skyfighter-best", String(nb));
           } catch {
             // ignore
           }
@@ -1232,16 +1228,19 @@ export default function FighterGame() {
             fetch("/api/score", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ score: scoreRef.current, level: next }),
+              body: JSON.stringify({ score: nb, level: 1 }),
             }).catch(() => {});
             setRefreshLeaderboardKey((k) => k + 1);
           }
-          return next;
+          return nb;
         });
       }
     }
 
     function render(c: CanvasRenderingContext2D, s: GameState, currentStatus: Status) {
+      if (timerValueRef.current) {
+        timerValueRef.current.textContent = formatTime(Math.max(0, s.levelDuration - s.elapsed));
+      }
       const { width, height } = s;
       const sky = c.createLinearGradient(0, 0, 0, height);
       sky.addColorStop(0, "#155a9e");
@@ -1356,8 +1355,10 @@ export default function FighterGame() {
           <div className="text-lg font-bold tabular-nums leading-tight">{score}</div>
         </div>
         <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm text-center">
-          <div className="text-xs uppercase tracking-wide text-white/60">Level</div>
-          <div className="text-lg font-bold tabular-nums leading-tight">{selectedLevel}</div>
+          <div className="text-xs uppercase tracking-wide text-white/60">Time</div>
+          <div ref={timerValueRef} className="text-lg font-bold tabular-nums leading-tight">
+            0:00
+          </div>
         </div>
         <div className="flex gap-1.5 rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
           {Array.from({ length: maxLives }, (_, i) => (
@@ -1445,7 +1446,7 @@ export default function FighterGame() {
 
           {best > 0 && <p className="text-xs text-white/60">Best score: {best}</p>}
 
-          <AuthPanel onUserChange={setUser} refreshLeaderboardKey={refreshLeaderboardKey} />
+          <AuthPanel onUserChange={handleUserChange} refreshLeaderboardKey={refreshLeaderboardKey} />
 
           {(lobbyMode === "solo" || (lobbyMode === "host" && connStatus === "connected")) && (
             <button
@@ -1461,23 +1462,23 @@ export default function FighterGame() {
 
       {status === "levelcomplete" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/65 px-6 text-center text-white font-sans">
-          <h2 className="text-3xl font-extrabold">Level {selectedLevel} Complete!</h2>
+          <h2 className="text-3xl font-extrabold">Time&apos;s Up!</h2>
           <p className="text-lg">
             Score: <span className="font-bold">{score}</span>
           </p>
           {isAlly ? (
-            <p className="text-sm text-white/70">Waiting for host to start the next level…</p>
+            <p className="text-sm text-white/70">Waiting for host to play again…</p>
           ) : (
             <button
-              onClick={handleNextLevel}
+              onClick={handlePlayAgain}
               className="mt-1 rounded-full bg-red-600 px-8 py-3 text-base font-bold shadow-lg shadow-red-900/40 active:scale-95 transition-transform"
             >
-              Next Level
+              Play Again
             </button>
           )}
           <div className="flex gap-4">
-            <button onClick={backToLevelSelect} className="text-sm text-white/70 underline underline-offset-2">
-              Level Select
+            <button onClick={backToMenu} className="text-sm text-white/70 underline underline-offset-2">
+              Main Menu
             </button>
             <button onClick={handleQuit} className="text-sm text-white/70 underline underline-offset-2">
               Quit Game
@@ -1490,22 +1491,22 @@ export default function FighterGame() {
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/65 px-6 text-center text-white font-sans">
           <h2 className="text-3xl font-extrabold">{isAlly && hostLeft ? "Host Disconnected" : "Shot Down!"}</h2>
           <p className="text-lg">
-            Level {selectedLevel} · Score: <span className="font-bold">{score}</span>
+            Score: <span className="font-bold">{score}</span>
           </p>
           <p className="text-sm text-white/70">Best: {best}</p>
           {isAlly ? (
             <p className="text-sm text-white/70">Waiting for host…</p>
           ) : (
             <button
-              onClick={handleRetry}
+              onClick={handlePlayAgain}
               className="mt-1 rounded-full bg-red-600 px-8 py-3 text-base font-bold shadow-lg shadow-red-900/40 active:scale-95 transition-transform"
             >
-              Retry Level {selectedLevel}
+              Play Again
             </button>
           )}
           <div className="flex gap-4">
-            <button onClick={backToLevelSelect} className="text-sm text-white/70 underline underline-offset-2">
-              Level Select
+            <button onClick={backToMenu} className="text-sm text-white/70 underline underline-offset-2">
+              Main Menu
             </button>
             <button onClick={handleQuit} className="text-sm text-white/70 underline underline-offset-2">
               Quit Game
@@ -1516,13 +1517,13 @@ export default function FighterGame() {
 
       {status === "quit" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/65 px-6 text-center text-white font-sans">
-          <h2 className="text-3xl font-extrabold">Thanks for Playing!</h2>
+          <h2 className="text-3xl font-extrabold">Mission Debrief</h2>
           <p className="text-lg">
-            Level {selectedLevel} · Score: <span className="font-bold">{score}</span>
+            Score: <span className="font-bold">{score}</span>
           </p>
           <p className="text-sm text-white/70">Best: {best}</p>
           <button
-            onClick={backToLevelSelect}
+            onClick={backToMenu}
             className="mt-1 rounded-full bg-white/20 px-6 py-2.5 text-sm font-semibold"
           >
             Back to Menu

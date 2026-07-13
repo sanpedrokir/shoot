@@ -49,6 +49,7 @@ export default function AuthPanel({ onUserChange, refreshLeaderboardKey }: AuthP
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [top, setTop] = useState<LeaderboardTop | null>(null);
+  const [leaderboardChecked, setLeaderboardChecked] = useState(false);
 
   useEffect(() => {
     fetch("/api/auth/me", { cache: "no-store" })
@@ -67,7 +68,8 @@ export default function AuthPanel({ onUserChange, refreshLeaderboardKey }: AuthP
     fetch("/api/leaderboard", { cache: "no-store" })
       .then((r) => r.json())
       .then((data: { top: LeaderboardTop | null }) => setTop(data.top))
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setLeaderboardChecked(true));
   }, [refreshLeaderboardKey]);
 
   const submit = async () => {
@@ -118,9 +120,15 @@ export default function AuthPanel({ onUserChange, refreshLeaderboardKey }: AuthP
 
   return (
     <div className="flex flex-col items-center gap-2 text-white">
-      {top && (
-        <p className="text-xs text-white/70">
-          Highest Score: <span className="font-semibold">{top.nickname}</span> {top.highScore}
+      {leaderboardChecked && (
+        <p className="rounded-full bg-black/30 px-4 py-1.5 text-base font-bold text-yellow-300">
+          {top ? (
+            <>
+              🏆 {top.nickname} — {top.highScore}
+            </>
+          ) : (
+            "🏆 No scores yet — be the first!"
+          )}
         </p>
       )}
 
