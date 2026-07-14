@@ -80,8 +80,8 @@ export interface NetSnapshot {
   score: number;
   lives: number;
   players: NetPlayer[];
-  enemies: { x: number; y: number; scale: number; phase: number }[];
+  enemies: { x: number; y: number; vy: number; scale: number; phase: number }[];
   missiles: { x: number; y: number; vx: number; vy: number }[];
-  bombs: { x: number; y: number; rot: number }[];
-  bullets: { x: number; y: number }[];
+  bombs: { x: number; y: number; vy: number; rot: number }[];
+  bullets: { x: number; y: number; vy: number }[];
 }

@@ -533,6 +533,7 @@ export default function FighterGame() {
   const broadcastAccumRef = useRef(0);
   const inputAccumRef = useRef(0);
   const latestSnapshotRef = useRef<NetSnapshot | null>(null);
+  const appliedSnapshotRef = useRef<NetSnapshot | null>(null);
   // The ally's own desired position, tracked separately from GameState.players
   // because that array gets wholesale-replaced by every incoming network
   // snapshot. localPosRef is the ally's client-side-predicted plane position;
@@ -859,7 +860,15 @@ export default function FighterGame() {
       if (s) {
         if (netRoleRef.current === "ally") {
           if (statusRef.current === "playing") {
-            applySnapshot(s, latestSnapshotRef.current);
+            // Snapshots arrive at ~8/sec; only re-sync from a snapshot the
+            // moment it's new, so the per-frame extrapolation below has a
+            // chance to actually accumulate motion between arrivals instead
+            // of being reset back to the same stale values every frame.
+            if (latestSnapshotRef.current && latestSnapshotRef.current !== appliedSnapshotRef.current) {
+              applySnapshot(s, latestSnapshotRef.current);
+              appliedSnapshotRef.current = latestSnapshotRef.current;
+            }
+            extrapolateAlly(s, dt);
 
             // Client-side prediction: move our own plane locally & instantly
             // instead of waiting a full network round trip (input -> host ->
@@ -927,6 +936,33 @@ export default function FighterGame() {
       rafRef.current = requestAnimationFrame(loop);
     };
 
+    // Runs every frame on the ally's client (not just when a fresh snapshot
+    // arrives) to dead-reckon fast-moving entities forward using their
+    // last-known velocity. Snapshots only arrive ~8/sec (Pusher's client-event
+    // cap), so without this everything but the ally's own plane would freeze
+    // between updates and visibly teleport — this is what read as "lag".
+    function extrapolateAlly(s: GameState, dt: number) {
+      for (const pl of s.players) {
+        if (pl.id === localIdRef.current) continue;
+        pl.x += (pl.targetX - pl.x) * Math.min(1, dt * 10);
+        pl.y += (pl.targetY - pl.y) * Math.min(1, dt * 10);
+      }
+      for (const en of s.enemies) {
+        en.y += en.vy * dt;
+      }
+      for (const m of s.missiles) {
+        m.x += m.vx * dt;
+        m.y += m.vy * dt;
+      }
+      for (const bm of s.bombs) {
+        bm.vy += GRAVITY * dt;
+        bm.y += bm.vy * dt;
+      }
+      for (const b of s.bullets) {
+        b.y += b.vy * dt;
+      }
+    }
+
     function applySnapshot(s: GameState, snap: NetSnapshot | null) {
       if (!snap) return;
       const scaleX = s.width / snap.width;
@@ -934,19 +970,24 @@ export default function FighterGame() {
       s.level = snap.level;
       s.levelDuration = snap.levelDuration;
       s.elapsed = snap.elapsed;
-      s.players = snap.players.map((np) => ({
-        id: np.id,
-        x: np.x * scaleX,
-        y: np.y * scaleY,
-        targetX: np.x * scaleX,
-        targetY: np.y * scaleY,
-        invuln: np.invuln,
-        fireTimer: 0,
-      }));
+      s.players = snap.players.map((np) => {
+        const targetX = np.x * scaleX;
+        const targetY = np.y * scaleY;
+        const existing = np.id === localIdRef.current ? undefined : s.players.find((p) => p.id === np.id);
+        return {
+          id: np.id,
+          x: existing ? existing.x : targetX,
+          y: existing ? existing.y : targetY,
+          targetX,
+          targetY,
+          invuln: np.invuln,
+          fireTimer: 0,
+        };
+      });
       s.enemies = snap.enemies.map((ne) => ({
         x: ne.x * scaleX,
         y: ne.y * scaleY,
-        vy: 0,
+        vy: ne.vy,
         phase: ne.phase,
         amp: 0,
         scale: ne.scale,
@@ -959,8 +1000,8 @@ export default function FighterGame() {
         vx: nm.vx,
         vy: nm.vy,
       }));
-      s.bombs = snap.bombs.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: 0, rot: nb.rot }));
-      s.bullets = snap.bullets.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: 0 }));
+      s.bombs = snap.bombs.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: nb.vy, rot: nb.rot }));
+      s.bullets = snap.bullets.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: nb.vy }));
 
       setScore((prev) => (prev !== snap.score ? snap.score : prev));
       setLives((prev) => (prev !== snap.lives ? snap.lives : prev));
@@ -988,16 +1029,22 @@ export default function FighterGame() {
         })),
         enemies: s.enemies
           .slice(0, MAX_SNAPSHOT_ENTITIES)
-          .map((en) => ({ x: round1(en.x), y: round1(en.y), scale: round1(en.scale), phase: round1(en.phase) })),
+          .map((en) => ({
+            x: round1(en.x),
+            y: round1(en.y),
+            vy: round1(en.vy),
+            scale: round1(en.scale),
+            phase: round1(en.phase),
+          })),
         missiles: s.missiles
           .slice(0, MAX_SNAPSHOT_ENTITIES)
           .map((m) => ({ x: round1(m.x), y: round1(m.y), vx: round1(m.vx), vy: round1(m.vy) })),
         bombs: s.bombs
           .slice(0, MAX_SNAPSHOT_ENTITIES)
-          .map((b) => ({ x: round1(b.x), y: round1(b.y), rot: round1(b.rot) })),
+          .map((b) => ({ x: round1(b.x), y: round1(b.y), vy: round1(b.vy), rot: round1(b.rot) })),
         bullets: s.bullets
           .slice(0, MAX_SNAPSHOT_ENTITIES)
-          .map((b) => ({ x: round1(b.x), y: round1(b.y) })),
+          .map((b) => ({ x: round1(b.x), y: round1(b.y), vy: round1(b.vy) })),
       };
     }
 
