@@ -14,7 +14,7 @@ import {
 } from "../lib/coop";
 import AuthPanel, { type AuthUser } from "./AuthPanel";
 
-type Bullet = { x: number; y: number; vy: number };
+type Bullet = { x: number; y: number; vy: number; ownerId: string };
 type Missile = { x: number; y: number; vy: number; vx: number };
 type Bomb = { x: number; y: number; vy: number; rot: number };
 type Enemy = {
@@ -93,6 +93,27 @@ const MAX_SNAPSHOT_ENTITIES = 40;
 // never explodes.
 function levelDifficulty(level: number) {
   return Math.log2(level + 1) * 0.85;
+}
+
+// On top of level difficulty, a single playthrough gets tougher the longer
+// you survive — scaled to how far elapsed is through the level's duration
+// (levelDuration is 180s / 3min at level 1) so difficulty reliably ramps up
+// as the clock ticks toward the end, in solo, host, and ally games alike
+// (ally sees it because the host is the one simulating and broadcasting it).
+function timeDifficulty(elapsed: number, levelDuration: number) {
+  const t = clamp(elapsed / levelDuration, 0, 1);
+  return Math.log2(t * 8 + 1) * 1.1;
+}
+
+// The run alternates between two flavors of pressure — a bomb barrage vs a
+// squadron swarm — so survival never settles into one static pattern.
+// Weights oscillate smoothly (sine-based) rather than hard-switching, and
+// each spends roughly half the cycle near its peak with a soft crossfade
+// through the middle.
+const PHASE_PERIOD = 45;
+function phaseFocus(elapsed: number) {
+  const wave = Math.sin((elapsed / PHASE_PERIOD) * Math.PI * 2);
+  return { bombFocus: Math.max(0, wave), swarmFocus: Math.max(0, -wave) };
 }
 
 // How long a level requires surviving to clear it: level 1 is a full 3
@@ -523,6 +544,7 @@ export default function FighterGame() {
   const rafRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
   const timerValueRef = useRef<HTMLDivElement | null>(null);
+  const phaseLabelRef = useRef<HTMLSpanElement | null>(null);
   const lobbyModeRef = useRef<LobbyMode>("solo");
 
   const localIdRef = useRef<string>("");
@@ -543,6 +565,11 @@ export default function FighterGame() {
 
   const [status, setStatus] = useState<Status>("ready");
   const [score, setScore] = useState(0);
+  // Per-player scores, index-aligned with playerIdsRef.current / s.players
+  // (index 0 is always whoever started the game — the host in co-op, the
+  // solo player otherwise; index 1, when present, is their ally).
+  const [scores, setScores] = useState<number[]>([0]);
+  const scoresRef = useRef<number[]>([0]);
   const [lives, setLives] = useState(3);
   const [maxLives, setMaxLives] = useState(3);
   const [hostLeft, setHostLeft] = useState(false);
@@ -633,6 +660,8 @@ export default function FighterGame() {
     }
     setScore(0);
     scoreRef.current = 0;
+    scoresRef.current = playerIds.map(() => 0);
+    setScores(scoresRef.current);
     const total = 3 + (playerIds.length - 1);
     setMaxLives(total);
     setLives(total);
@@ -1001,8 +1030,13 @@ export default function FighterGame() {
         vy: nm.vy,
       }));
       s.bombs = snap.bombs.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: nb.vy, rot: nb.rot }));
-      s.bullets = snap.bullets.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: nb.vy }));
+      s.bullets = snap.bullets.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: nb.vy, ownerId: "" }));
 
+      const newScores = snap.players.map((np) => np.score);
+      scoresRef.current = newScores;
+      setScores((prev) =>
+        prev.length === newScores.length && prev.every((v, i) => v === newScores[i]) ? prev : newScores
+      );
       setScore((prev) => (prev !== snap.score ? snap.score : prev));
       setLives((prev) => (prev !== snap.lives ? snap.lives : prev));
       if (snap.status !== statusRef.current) {
@@ -1021,11 +1055,12 @@ export default function FighterGame() {
         elapsed: round1(s.elapsed),
         score: scoreRef.current,
         lives: livesRef.current,
-        players: s.players.map((pl) => ({
+        players: s.players.map((pl, i) => ({
           id: pl.id,
           x: round1(pl.x),
           y: round1(pl.y),
           invuln: round1(pl.invuln),
+          score: scoresRef.current[i] ?? 0,
         })),
         enemies: s.enemies
           .slice(0, MAX_SNAPSHOT_ENTITIES)
@@ -1074,20 +1109,25 @@ export default function FighterGame() {
         pl.fireTimer -= dt;
         if (pl.fireTimer <= 0) {
           pl.fireTimer = 0.18;
-          s.bullets.push({ x: pl.x - 7, y: pl.y - 14, vy: -560 });
-          s.bullets.push({ x: pl.x + 7, y: pl.y - 14, vy: -560 });
+          s.bullets.push({ x: pl.x - 7, y: pl.y - 14, vy: -560, ownerId: pl.id });
+          s.bullets.push({ x: pl.x + 7, y: pl.y - 14, vy: -560, ownerId: pl.id });
         }
       }
       for (const b of s.bullets) b.y += b.vy * dt;
       s.bullets = s.bullets.filter((b) => b.y > -20);
 
-      // Difficulty is driven by the level being played, not elapsed time.
-      const difficulty = levelDifficulty(s.level);
+      // Difficulty is driven by the level being played plus how long this
+      // playthrough has been running, and oscillates between a bomb-heavy
+      // phase and a swarm-heavy phase as it climbs.
+      const difficulty = levelDifficulty(s.level) + timeDifficulty(s.elapsed, s.levelDuration);
+      const { bombFocus, swarmFocus } = phaseFocus(s.elapsed);
       s.spawnTimer -= dt;
       if (s.spawnTimer <= 0) {
-        s.spawnTimer = clamp(1.15 - difficulty * 0.5, 0.22, 1.15) + Math.random() * 0.3;
-        // One extra enemy per teammate so co-op stays a real challenge.
-        for (let i = 0; i < s.players.length; i++) {
+        s.spawnTimer = clamp(1.15 - difficulty * 0.5 - swarmFocus * 0.4, 0.15, 1.15) + Math.random() * 0.3;
+        // One extra enemy per teammate so co-op stays a real challenge, plus
+        // more on top during the peak of a squadron-swarm phase.
+        const extraSwarm = Math.min(2, Math.floor(swarmFocus * 2.2));
+        for (let i = 0; i < s.players.length + extraSwarm; i++) {
           s.enemies.push({
             x: 30 + Math.random() * (s.width - 60),
             y: -30 - i * 40,
@@ -1129,7 +1169,7 @@ export default function FighterGame() {
         }
         en.bombTimer -= dt;
         if (en.bombTimer <= 0 && en.y > 10 && en.y < s.height - 100) {
-          en.bombTimer = clamp(2.8 - difficulty * 0.35, 0.9, 2.8) + Math.random() * 2.4;
+          en.bombTimer = clamp(2.8 - difficulty * 0.35 - bombFocus * 1.8, 0.35, 2.8) + Math.random() * 2.4;
           s.bombs.push({ x: en.x, y: en.y + 12, vy: 40, rot: Math.random() * Math.PI * 2 });
         }
       }
@@ -1163,9 +1203,11 @@ export default function FighterGame() {
       }
       s.bombs = s.bombs.filter((bm) => bm.y < s.height + 30);
 
-      // bullet vs enemy
+      // bullet vs enemy — credited to whichever plane fired the killing shot,
+      // so co-op tracks each pilot's own score alongside the team total.
       const deadEnemies = new Set<Enemy>();
       const deadBullets = new Set<Bullet>();
+      let scored = false;
       for (const b of s.bullets) {
         for (const en of s.enemies) {
           if (deadEnemies.has(en) || deadBullets.has(b)) continue;
@@ -1174,12 +1216,21 @@ export default function FighterGame() {
             deadEnemies.add(en);
             deadBullets.add(b);
             spawnExplosion(s.particles, en.x, en.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"]);
-            setScore((sc) => sc + 10);
+            const idx = s.players.findIndex((p) => p.id === b.ownerId);
+            if (idx >= 0) {
+              scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 10;
+              scored = true;
+            }
           }
         }
       }
       if (deadEnemies.size) s.enemies = s.enemies.filter((en) => !deadEnemies.has(en));
       if (deadBullets.size) s.bullets = s.bullets.filter((b) => !deadBullets.has(b));
+      if (scored) {
+        setScores([...scoresRef.current]);
+        scoreRef.current = scoresRef.current.reduce((sum, v) => sum + (v ?? 0), 0);
+        setScore(scoreRef.current);
+      }
 
       // player collisions — shared lives pool across the whole team
       for (const pl of s.players) {
@@ -1225,25 +1276,22 @@ export default function FighterGame() {
             if (next <= 0) {
               statusRef.current = "gameover";
               setStatus("gameover");
-              setScore((sc) => {
-                setBest((b) => {
-                  const nb = Math.max(b, sc);
-                  try {
-                    window.localStorage.setItem("skyfighter-best", String(nb));
-                  } catch {
-                    // ignore
-                  }
-                  if (userRef.current) {
-                    fetch("/api/score", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ score: nb, level: 1 }),
-                    }).catch(() => {});
-                    setRefreshLeaderboardKey((k) => k + 1);
-                  }
-                  return nb;
-                });
-                return sc;
+              setBest((b) => {
+                const nb = Math.max(b, scoreRef.current);
+                try {
+                  window.localStorage.setItem("skyfighter-best", String(nb));
+                } catch {
+                  // ignore
+                }
+                if (userRef.current) {
+                  fetch("/api/score", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ score: nb, level: 1 }),
+                  }).catch(() => {});
+                  setRefreshLeaderboardKey((k) => k + 1);
+                }
+                return nb;
               });
             }
             return next;
@@ -1287,6 +1335,21 @@ export default function FighterGame() {
     function render(c: CanvasRenderingContext2D, s: GameState, currentStatus: Status) {
       if (timerValueRef.current) {
         timerValueRef.current.textContent = formatTime(Math.max(0, s.levelDuration - s.elapsed));
+      }
+      if (phaseLabelRef.current) {
+        const label = phaseLabelRef.current;
+        const { bombFocus, swarmFocus } = phaseFocus(s.elapsed);
+        if (currentStatus !== "playing") {
+          label.style.opacity = "0";
+        } else if (bombFocus > swarmFocus && bombFocus > 0.55) {
+          label.textContent = "⚠ Bomber Wing Incoming";
+          label.style.opacity = String(clamp((bombFocus - 0.55) / 0.45, 0, 1));
+        } else if (swarmFocus > bombFocus && swarmFocus > 0.55) {
+          label.textContent = "⚠ Squadron Inbound";
+          label.style.opacity = String(clamp((swarmFocus - 0.55) / 0.45, 0, 1));
+        } else {
+          label.style.opacity = "0";
+        }
       }
       const { width, height } = s;
       const sky = c.createLinearGradient(0, 0, 0, height);
@@ -1397,10 +1460,23 @@ export default function FighterGame() {
       <canvas ref={canvasRef} className="absolute inset-0 block" />
 
       <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-3 sm:p-4 text-white font-sans">
-        <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
-          <div className="text-xs uppercase tracking-wide text-white/60">Score</div>
-          <div className="text-lg font-bold tabular-nums leading-tight">{score}</div>
-        </div>
+        {netRole === "solo" ? (
+          <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
+            <div className="text-xs uppercase tracking-wide text-white/60">Score</div>
+            <div className="text-lg font-bold tabular-nums leading-tight">{score}</div>
+          </div>
+        ) : (
+          <div className="flex gap-1.5">
+            <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
+              <div className="text-xs uppercase tracking-wide text-white/60">Host</div>
+              <div className="text-lg font-bold tabular-nums leading-tight">{scores[0] ?? 0}</div>
+            </div>
+            <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
+              <div className="text-xs uppercase tracking-wide text-white/60">Ally</div>
+              <div className="text-lg font-bold tabular-nums leading-tight">{scores[1] ?? 0}</div>
+            </div>
+          </div>
+        )}
         <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm text-center">
           <div className="text-xs uppercase tracking-wide text-white/60">Time</div>
           <div ref={timerValueRef} className="text-lg font-bold tabular-nums leading-tight">
@@ -1417,6 +1493,14 @@ export default function FighterGame() {
             </span>
           ))}
         </div>
+      </div>
+
+      <div className="pointer-events-none absolute inset-x-0 top-16 sm:top-20 z-10 flex justify-center text-center font-sans">
+        <span
+          ref={phaseLabelRef}
+          className="rounded-full bg-red-700/80 px-4 py-1 text-xs sm:text-sm font-bold uppercase tracking-wide text-white shadow-lg backdrop-blur-sm"
+          style={{ opacity: 0, transition: "opacity 300ms ease-out" }}
+        />
       </div>
 
       {status === "ready" && (
@@ -1456,8 +1540,17 @@ export default function FighterGame() {
                 <>
                   <p className="text-xs text-white/60">Share this code with your ally</p>
                   <p className="text-3xl font-extrabold tracking-widest tabular-nums">{roomCode}</p>
-                  <p className="text-xs text-white/70">
-                    {teammateIds.length === 0 ? "Waiting for ally to join…" : "Ally connected"}
+                  <p
+                    className={`flex items-center gap-2 text-base font-extrabold ${
+                      teammateIds.length === 0 ? "text-amber-300" : "text-green-300"
+                    }`}
+                  >
+                    <span
+                      className={`h-2.5 w-2.5 rounded-full ${
+                        teammateIds.length === 0 ? "bg-amber-300 animate-pulse" : "bg-green-300"
+                      }`}
+                    />
+                    {teammateIds.length === 0 ? "Waiting for ally to join…" : "Ally connected!"}
                   </p>
                 </>
               )}
@@ -1485,7 +1578,10 @@ export default function FighterGame() {
               )}
               {connStatus === "connecting" && <p className="text-sm">Connecting…</p>}
               {connStatus === "connected" && (
-                <p className="text-sm text-green-200">Connected! Waiting for host to start…</p>
+                <p className="flex items-center gap-2 text-base font-extrabold text-green-300">
+                  <span className="h-2.5 w-2.5 rounded-full bg-green-300 animate-pulse" />
+                  Connected! Waiting for host to start…
+                </p>
               )}
               {connStatus === "error" && <p className="text-sm text-red-200">{connError}</p>}
             </div>
@@ -1513,6 +1609,12 @@ export default function FighterGame() {
           <p className="text-lg">
             Score: <span className="font-bold">{score}</span>
           </p>
+          {netRole !== "solo" && (
+            <p className="text-sm text-white/70">
+              Host: <span className="font-semibold text-white">{scores[0] ?? 0}</span> · Ally:{" "}
+              <span className="font-semibold text-white">{scores[1] ?? 0}</span>
+            </p>
+          )}
           {isAlly ? (
             <p className="text-sm text-white/70">Waiting for host to play again…</p>
           ) : (
@@ -1540,6 +1642,12 @@ export default function FighterGame() {
           <p className="text-lg">
             Score: <span className="font-bold">{score}</span>
           </p>
+          {netRole !== "solo" && (
+            <p className="text-sm text-white/70">
+              Host: <span className="font-semibold text-white">{scores[0] ?? 0}</span> · Ally:{" "}
+              <span className="font-semibold text-white">{scores[1] ?? 0}</span>
+            </p>
+          )}
           <p className="text-sm text-white/70">Best: {best}</p>
           {isAlly ? (
             <p className="text-sm text-white/70">Waiting for host…</p>

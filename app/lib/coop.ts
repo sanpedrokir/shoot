@@ -68,6 +68,7 @@ export interface NetPlayer {
   x: number;
   y: number;
   invuln: number;
+  score: number;
 }
 
 export interface NetSnapshot {
