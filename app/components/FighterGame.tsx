@@ -96,13 +96,14 @@ function levelDifficulty(level: number) {
 }
 
 // On top of level difficulty, a single playthrough gets tougher the longer
-// you survive — scaled to how far elapsed is through the level's duration
-// (levelDuration is 180s / 3min at level 1) so difficulty reliably ramps up
-// as the clock ticks toward the end, in solo, host, and ally games alike
-// (ally sees it because the host is the one simulating and broadcasting it).
-function timeDifficulty(elapsed: number, levelDuration: number) {
-  const t = clamp(elapsed / levelDuration, 0, 1);
-  return Math.log2(t * 8 + 1) * 1.1;
+// you survive. This is a flat step, not a smooth curve: it holds steady for
+// a full minute, then jumps by +20% — a continuous log-curve compounded too
+// fast right before the time limit, spawning a flood of planes. Stepping by
+// whole minutes keeps the ramp predictable, in solo, host, and ally games
+// alike (ally sees it because the host is the one simulating and
+// broadcasting it).
+function timeDifficultyMultiplier(elapsed: number) {
+  return 1 + Math.floor(elapsed / 60) * 0.2;
 }
 
 // The run alternates between two flavors of pressure — a bomb barrage vs a
@@ -1116,10 +1117,10 @@ export default function FighterGame() {
       for (const b of s.bullets) b.y += b.vy * dt;
       s.bullets = s.bullets.filter((b) => b.y > -20);
 
-      // Difficulty is driven by the level being played plus how long this
-      // playthrough has been running, and oscillates between a bomb-heavy
+      // Difficulty is driven by the level being played, stepped up +20% for
+      // every full minute survived, and oscillates between a bomb-heavy
       // phase and a swarm-heavy phase as it climbs.
-      const difficulty = levelDifficulty(s.level) + timeDifficulty(s.elapsed, s.levelDuration);
+      const difficulty = levelDifficulty(s.level) * timeDifficultyMultiplier(s.elapsed);
       const { bombFocus, swarmFocus } = phaseFocus(s.elapsed);
       s.spawnTimer -= dt;
       if (s.spawnTimer <= 0) {
