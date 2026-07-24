@@ -117,13 +117,13 @@ function levelDifficulty(level: number) {
 
 // On top of level difficulty, a single playthrough gets tougher the longer
 // you survive. This is a flat step, not a smooth curve: it holds steady for
-// a full minute, then jumps by +4% — a continuous log-curve compounded too
+// a full minute, then jumps by +0.5% — a continuous log-curve compounded too
 // fast right before the time limit, spawning a flood of planes. Stepping by
 // whole minutes keeps the ramp predictable, in solo, host, and ally games
 // alike (ally sees it because the host is the one simulating and
 // broadcasting it).
 function timeDifficultyMultiplier(elapsed: number) {
-  return 1 + Math.floor(elapsed / 60) * 0.04;
+  return 1 + Math.floor(elapsed / 60) * 0.005;
 }
 
 // Cash drops get more frequent the longer a run goes, mirroring the
