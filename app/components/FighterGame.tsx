@@ -1645,7 +1645,7 @@ export default function FighterGame() {
                 key={m}
                 onClick={() => selectLobbyMode(m)}
                 className={`rounded-full px-4 py-1.5 font-semibold transition-colors ${
-                  lobbyMode === m ? "bg-red-600" : "text-white/70"
+                  lobbyMode === m ? "bg-blue-600" : "text-white/70"
                 }`}
               >
                 {m === "solo" ? "Single Player" : m === "host" ? "Get Ally" : "Join Ally"}
@@ -1722,7 +1722,7 @@ export default function FighterGame() {
           {(lobbyMode === "solo" || (lobbyMode === "host" && connStatus === "connected")) && (
             <button
               onClick={handleStart}
-              className="mt-1 rounded-full bg-red-600 px-8 py-3 text-base font-bold shadow-lg shadow-red-900/40 active:scale-95 transition-transform"
+              className="mt-1 rounded-full bg-blue-600 px-8 py-3 text-base font-bold shadow-lg shadow-blue-900/40 active:scale-95 transition-transform"
             >
               Start
             </button>
@@ -1748,7 +1748,7 @@ export default function FighterGame() {
           ) : (
             <button
               onClick={handlePlayAgain}
-              className="mt-1 rounded-full bg-red-600 px-8 py-3 text-base font-bold shadow-lg shadow-red-900/40 active:scale-95 transition-transform"
+              className="mt-1 rounded-full bg-blue-600 px-8 py-3 text-base font-bold shadow-lg shadow-blue-900/40 active:scale-95 transition-transform"
             >
               Play Again
             </button>
@@ -1782,7 +1782,7 @@ export default function FighterGame() {
           ) : (
             <button
               onClick={handlePlayAgain}
-              className="mt-1 rounded-full bg-red-600 px-8 py-3 text-base font-bold shadow-lg shadow-red-900/40 active:scale-95 transition-transform"
+              className="mt-1 rounded-full bg-blue-600 px-8 py-3 text-base font-bold shadow-lg shadow-blue-900/40 active:scale-95 transition-transform"
             >
               Play Again
             </button>
