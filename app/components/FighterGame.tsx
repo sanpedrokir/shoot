@@ -89,6 +89,14 @@ const INVULN_TIME = 2.2;
 // maxLives), so recovery is a steady drip rather than an instant refill.
 const CASH_VALUE = 20;
 const CASH_PER_LIFE = 100;
+
+// A restored life also grants a brief "Healthy" invulnerability window, and
+// that window grows the more total cash a run has collected — so staying
+// cash-focused pays off with a longer safety margin each time you heal, not
+// just an occasional extra life.
+function healInvulnDuration(cashTotal: number) {
+  return clamp(2 + cashTotal * 0.004, 2.5, 6);
+}
 const GRAVITY = 130;
 // Pusher hard-caps client events at 10/sec per connection; staying well
 // under that avoids events getting silently dropped (which reads as
@@ -113,6 +121,14 @@ function levelDifficulty(level: number) {
 // broadcasting it).
 function timeDifficultyMultiplier(elapsed: number) {
   return 1 + Math.floor(elapsed / 60) * 0.08;
+}
+
+// Cash drops get more frequent the longer a run goes, mirroring the
+// difficulty ramp so recovery keeps pace with the growing pressure — same
+// flat-per-minute stepping, just shrinking the spawn interval instead of
+// growing a difficulty score.
+function cashRateMultiplier(elapsed: number) {
+  return 1 + Math.floor(elapsed / 60) * 0.3;
 }
 
 // The run alternates between two flavors of pressure — a bomb barrage vs a
@@ -1190,10 +1206,10 @@ export default function FighterGame() {
       const { bombFocus, swarmFocus } = phaseFocus(s.elapsed);
       s.spawnTimer -= dt;
       if (s.spawnTimer <= 0) {
-        s.spawnTimer = clamp(1.15 - difficulty * 0.5 - swarmFocus * 0.4, 0.15, 1.15) + Math.random() * 0.3;
+        s.spawnTimer = clamp(1.45 - difficulty * 0.5 - swarmFocus * 0.3, 0.35, 1.45) + Math.random() * 0.3;
         // One extra enemy per teammate so co-op stays a real challenge, plus
-        // more on top during the peak of a squadron-swarm phase.
-        const extraSwarm = Math.min(2, Math.floor(swarmFocus * 2.2));
+        // a little more on top during the peak of a squadron-swarm phase.
+        const extraSwarm = Math.min(1, Math.floor(swarmFocus * 2.2));
         for (let i = 0; i < s.players.length + extraSwarm; i++) {
           s.enemies.push({
             x: 30 + Math.random() * (s.width - 60),
@@ -1242,12 +1258,13 @@ export default function FighterGame() {
       }
       s.enemies = s.enemies.filter((en) => en.y < s.height + 40);
 
-      // Cash drops on its own steady timer, independent of the enemy/bomb
-      // difficulty ramp — it's a recovery mechanic, not a hazard, so it
-      // shouldn't get scarcer as the run gets harder.
+      // Cash drops on its own timer, independent of the enemy/bomb difficulty
+      // ramp — it's a recovery mechanic, not a hazard, so it never gets
+      // scarcer as the run gets harder. It does get more frequent the longer
+      // the run goes, so recovery keeps pace with the growing pressure.
       s.cashTimer -= dt;
       if (s.cashTimer <= 0) {
-        s.cashTimer = 3 + Math.random() * 3;
+        s.cashTimer = (3 + Math.random() * 3) / cashRateMultiplier(s.elapsed);
         s.cash.push({
           x: 24 + Math.random() * (s.width - 48),
           y: -20,
@@ -1344,6 +1361,10 @@ export default function FighterGame() {
         const livesToRestore = Math.floor(newTotal / CASH_PER_LIFE) - Math.floor(prevTotal / CASH_PER_LIFE);
         if (livesToRestore > 0) {
           setLives((lv) => Math.min(maxLivesRef.current, lv + livesToRestore));
+          const healInvuln = healInvulnDuration(newTotal);
+          for (const pl of s.players) {
+            pl.invuln = Math.max(pl.invuln, healInvuln);
+          }
         }
       }
 
@@ -1742,7 +1763,7 @@ export default function FighterGame() {
 
       {status === "gameover" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/65 px-6 text-center text-white font-sans">
-          <h2 className="text-3xl font-extrabold">{isAlly && hostLeft ? "Host Disconnected" : "Shot Down!"}</h2>
+          <h2 className="text-3xl font-extrabold">{isAlly && hostLeft ? "Host Disconnected" : "Game Over!"}</h2>
           <p className="text-lg">
             Score: <span className="font-bold">{score}</span>
           </p>
