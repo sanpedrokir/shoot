@@ -82,13 +82,16 @@ const PLAYER_HIT_RADIUS = 7;
 const ENEMY_HIT_RADIUS = 10;
 const MISSILE_HIT_RADIUS = 3.5;
 const BOMB_HIT_RADIUS = 4.5;
-const CASH_HIT_RADIUS = 10;
+// Wider than a hazard hit-radius on purpose — cash is a reward, not a
+// threat, so near-misses while dodging should still count as a grab instead
+// of demanding pixel-precise flying on top of everything else going on.
+const CASH_HIT_RADIUS = 18;
 const INVULN_TIME = 2.2;
 // Each cash pickup is worth a fixed amount; once the running total crosses
 // another multiple of CASH_PER_LIFE, one life is restored (capped at
 // maxLives), so recovery is a steady drip rather than an instant refill.
 const CASH_VALUE = 20;
-const CASH_PER_LIFE = 100;
+const CASH_PER_LIFE = 40;
 
 // A restored life also grants a brief "Healthy" invulnerability window, and
 // that window grows the more total cash a run has collected — so staying
@@ -114,13 +117,13 @@ function levelDifficulty(level: number) {
 
 // On top of level difficulty, a single playthrough gets tougher the longer
 // you survive. This is a flat step, not a smooth curve: it holds steady for
-// a full minute, then jumps by +8% — a continuous log-curve compounded too
+// a full minute, then jumps by +4% — a continuous log-curve compounded too
 // fast right before the time limit, spawning a flood of planes. Stepping by
 // whole minutes keeps the ramp predictable, in solo, host, and ally games
 // alike (ally sees it because the host is the one simulating and
 // broadcasting it).
 function timeDifficultyMultiplier(elapsed: number) {
-  return 1 + Math.floor(elapsed / 60) * 0.08;
+  return 1 + Math.floor(elapsed / 60) * 0.04;
 }
 
 // Cash drops get more frequent the longer a run goes, mirroring the
@@ -1199,14 +1202,14 @@ export default function FighterGame() {
       for (const b of s.bullets) b.y += b.vy * dt;
       s.bullets = s.bullets.filter((b) => b.y > -20);
 
-      // Difficulty is driven by the level being played, stepped up +20% for
+      // Difficulty is driven by the level being played, stepped up +4% for
       // every full minute survived, and oscillates between a bomb-heavy
       // phase and a swarm-heavy phase as it climbs.
       const difficulty = levelDifficulty(s.level) * timeDifficultyMultiplier(s.elapsed);
       const { bombFocus, swarmFocus } = phaseFocus(s.elapsed);
       s.spawnTimer -= dt;
       if (s.spawnTimer <= 0) {
-        s.spawnTimer = clamp(1.45 - difficulty * 0.5 - swarmFocus * 0.3, 0.35, 1.45) + Math.random() * 0.3;
+        s.spawnTimer = clamp(1.6 - difficulty * 0.5 - swarmFocus * 0.3, 0.45, 1.6) + Math.random() * 0.3;
         // One extra enemy per teammate so co-op stays a real challenge, plus
         // a little more on top during the peak of a squadron-swarm phase.
         const extraSwarm = Math.min(1, Math.floor(swarmFocus * 2.2));
@@ -1264,11 +1267,11 @@ export default function FighterGame() {
       // the run goes, so recovery keeps pace with the growing pressure.
       s.cashTimer -= dt;
       if (s.cashTimer <= 0) {
-        s.cashTimer = (3 + Math.random() * 3) / cashRateMultiplier(s.elapsed);
+        s.cashTimer = (2 + Math.random() * 2.5) / cashRateMultiplier(s.elapsed);
         s.cash.push({
           x: 24 + Math.random() * (s.width - 48),
           y: -20,
-          vy: 70 + Math.random() * 25,
+          vy: 55 + Math.random() * 20,
           phase: Math.random() * Math.PI * 2,
         });
       }
@@ -1763,7 +1766,7 @@ export default function FighterGame() {
 
       {status === "gameover" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/65 px-6 text-center text-white font-sans">
-          <h2 className="text-3xl font-extrabold">{isAlly && hostLeft ? "Host Disconnected" : "Game Over!"}</h2>
+          <h2 className="text-3xl font-extrabold">{isAlly && hostLeft ? "Host Disconnected" : "Plane Shot Down!"}</h2>
           <p className="text-lg">
             Score: <span className="font-bold">{score}</span>
           </p>
