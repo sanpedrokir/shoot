@@ -1055,6 +1055,8 @@ export default function FighterGame() {
       }
       for (const en of s.enemies) {
         en.y += en.vy * dt;
+        en.phase += dt * 1.6;
+        en.x = clamp(en.x + Math.sin(en.phase) * en.amp * dt * 0.6, 20, s.width - 20);
       }
       for (const m of s.missiles) {
         m.x += m.vx * dt;
@@ -1098,7 +1100,7 @@ export default function FighterGame() {
         y: ne.y * scaleY,
         vy: ne.vy,
         phase: ne.phase,
-        amp: 0,
+        amp: ne.amp * scaleX,
         scale: ne.scale,
         fireTimer: 1,
         bombTimer: 1,
@@ -1153,6 +1155,7 @@ export default function FighterGame() {
             vy: round1(en.vy),
             scale: round1(en.scale),
             phase: round1(en.phase),
+            amp: round1(en.amp),
           })),
         missiles: s.missiles
           .slice(0, MAX_SNAPSHOT_ENTITIES)
