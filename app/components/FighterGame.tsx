@@ -17,6 +17,7 @@ import AuthPanel, { type AuthUser } from "./AuthPanel";
 type Bullet = { x: number; y: number; vy: number; ownerId: string };
 type Missile = { x: number; y: number; vy: number; vx: number };
 type Bomb = { x: number; y: number; vy: number; rot: number };
+type Cash = { x: number; y: number; vy: number; phase: number };
 type Enemy = {
   x: number;
   y: number;
@@ -64,9 +65,11 @@ interface GameState {
   missiles: Missile[];
   bombs: Bomb[];
   enemies: Enemy[];
+  cash: Cash[];
   particles: Particle[];
   clouds: Cloud[];
   spawnTimer: number;
+  cashTimer: number;
   elapsed: number;
   pointerDown: boolean;
   keys: Set<string>;
@@ -79,7 +82,13 @@ const PLAYER_HIT_RADIUS = 7;
 const ENEMY_HIT_RADIUS = 10;
 const MISSILE_HIT_RADIUS = 3.5;
 const BOMB_HIT_RADIUS = 4.5;
+const CASH_HIT_RADIUS = 10;
 const INVULN_TIME = 2.2;
+// Each cash pickup is worth a fixed amount; once the running total crosses
+// another multiple of CASH_PER_LIFE, one life is restored (capped at
+// maxLives), so recovery is a steady drip rather than an instant refill.
+const CASH_VALUE = 20;
+const CASH_PER_LIFE = 100;
 const GRAVITY = 130;
 // Pusher hard-caps client events at 10/sec per connection; staying well
 // under that avoids events getting silently dropped (which reads as
@@ -97,13 +106,13 @@ function levelDifficulty(level: number) {
 
 // On top of level difficulty, a single playthrough gets tougher the longer
 // you survive. This is a flat step, not a smooth curve: it holds steady for
-// a full minute, then jumps by +20% — a continuous log-curve compounded too
+// a full minute, then jumps by +8% — a continuous log-curve compounded too
 // fast right before the time limit, spawning a flood of planes. Stepping by
 // whole minutes keeps the ramp predictable, in solo, host, and ally games
 // alike (ally sees it because the host is the one simulating and
 // broadcasting it).
 function timeDifficultyMultiplier(elapsed: number) {
-  return 1 + Math.floor(elapsed / 60) * 0.2;
+  return 1 + Math.floor(elapsed / 60) * 0.08;
 }
 
 // The run alternates between two flavors of pressure — a bomb barrage vs a
@@ -117,11 +126,11 @@ function phaseFocus(elapsed: number) {
   return { bombFocus: Math.max(0, wave), swarmFocus: Math.max(0, -wave) };
 }
 
-// How long a level requires surviving to clear it: level 1 is a full 3
+// How long a level requires surviving to clear it: level 1 is a full 4
 // minutes, growing slowly and capping so a long campaign stays a
 // long-term goal rather than an ever-longer marathon.
 function levelSurviveDuration(level: number) {
-  return clamp(180 + (level - 1) * 4, 180, 300);
+  return clamp(240 + (level - 1) * 4, 240, 360);
 }
 
 function makePlayers(width: number, height: number, playerIds: string[]): Player[] {
@@ -151,9 +160,11 @@ function makeInitialState(width: number, height: number, level: number, playerId
     missiles: [],
     bombs: [],
     enemies: [],
+    cash: [],
     particles: [],
     clouds,
     spawnTimer: 0.6,
+    cashTimer: 2 + Math.random() * 2,
     elapsed: 0,
     pointerDown: false,
     keys: new Set(),
@@ -467,6 +478,41 @@ function drawBomb(ctx: CanvasRenderingContext2D) {
   ctx.restore();
 }
 
+function drawCash(ctx: CanvasRenderingContext2D, shine: number) {
+  ctx.save();
+  const grad = ctx.createLinearGradient(0, -9, 0, 9);
+  grad.addColorStop(0, "#fff3b0");
+  grad.addColorStop(0.5, "#ffd23f");
+  grad.addColorStop(1, "#c98a1f");
+  ctx.beginPath();
+  ctx.arc(0, 0, 9, 0, Math.PI * 2);
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.strokeStyle = "#8a5c14";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(0, 0, 6.4, 0, Math.PI * 2);
+  ctx.strokeStyle = "rgba(255,255,255,0.55)";
+  ctx.lineWidth = 0.6;
+  ctx.stroke();
+
+  ctx.fillStyle = "#8a5c14";
+  ctx.font = "bold 11px sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText("$", 0, 0.5);
+
+  // soft rotating glint so it reads as shiny while falling
+  ctx.globalAlpha = 0.5 + shine * 0.3;
+  ctx.beginPath();
+  ctx.ellipse(-3 + shine * 4, -3, 2.2, 1, -0.5, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255,255,255,0.8)";
+  ctx.fill();
+  ctx.restore();
+}
+
 function drawBullet(ctx: CanvasRenderingContext2D) {
   const grad = ctx.createLinearGradient(0, -7, 0, 5);
   grad.addColorStop(0, "rgba(255,255,255,0.95)");
@@ -545,7 +591,6 @@ export default function FighterGame() {
   const rafRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
   const timerValueRef = useRef<HTMLDivElement | null>(null);
-  const phaseLabelRef = useRef<HTMLSpanElement | null>(null);
   const lobbyModeRef = useRef<LobbyMode>("solo");
 
   const localIdRef = useRef<string>("");
@@ -573,18 +618,27 @@ export default function FighterGame() {
   const scoresRef = useRef<number[]>([0]);
   const [lives, setLives] = useState(3);
   const [maxLives, setMaxLives] = useState(3);
+  const [cashTotal, setCashTotal] = useState(0);
   const [hostLeft, setHostLeft] = useState(false);
 
   // Kept in refs so the game-loop closure (created once) can read the
-  // latest score/lives when building a host broadcast snapshot.
+  // latest score/lives/cash when building a host broadcast snapshot.
   const scoreRef = useRef(score);
   const livesRef = useRef(lives);
+  const maxLivesRef = useRef(maxLives);
+  const cashTotalRef = useRef(cashTotal);
   useEffect(() => {
     scoreRef.current = score;
   }, [score]);
   useEffect(() => {
     livesRef.current = lives;
   }, [lives]);
+  useEffect(() => {
+    maxLivesRef.current = maxLives;
+  }, [maxLives]);
+  useEffect(() => {
+    cashTotalRef.current = cashTotal;
+  }, [cashTotal]);
   // Seeded with an SSR-safe default (matching the server-rendered markup) and
   // synced from localStorage in a mount effect below, to avoid a hydration
   // mismatch for returning players whose real best score differs from this.
@@ -665,8 +719,11 @@ export default function FighterGame() {
     setScores(scoresRef.current);
     const total = 3 + (playerIds.length - 1);
     setMaxLives(total);
+    maxLivesRef.current = total;
     setLives(total);
     livesRef.current = total;
+    setCashTotal(0);
+    cashTotalRef.current = 0;
     // Set synchronously (not just via the status-syncing effect) so the
     // game-loop closure never reads a stale ref for the one tick between
     // this call and the next React commit.
@@ -991,6 +1048,9 @@ export default function FighterGame() {
       for (const b of s.bullets) {
         b.y += b.vy * dt;
       }
+      for (const csh of s.cash) {
+        csh.y += csh.vy * dt;
+      }
     }
 
     function applySnapshot(s: GameState, snap: NetSnapshot | null) {
@@ -1032,6 +1092,7 @@ export default function FighterGame() {
       }));
       s.bombs = snap.bombs.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: nb.vy, rot: nb.rot }));
       s.bullets = snap.bullets.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: nb.vy, ownerId: "" }));
+      s.cash = snap.cash.map((nc) => ({ x: nc.x * scaleX, y: nc.y * scaleY, vy: nc.vy, phase: 0 }));
 
       const newScores = snap.players.map((np) => np.score);
       scoresRef.current = newScores;
@@ -1040,6 +1101,7 @@ export default function FighterGame() {
       );
       setScore((prev) => (prev !== snap.score ? snap.score : prev));
       setLives((prev) => (prev !== snap.lives ? snap.lives : prev));
+      setCashTotal((prev) => (prev !== snap.cashTotal ? snap.cashTotal : prev));
       if (snap.status !== statusRef.current) {
         statusRef.current = snap.status;
         setStatus(snap.status);
@@ -1056,6 +1118,7 @@ export default function FighterGame() {
         elapsed: round1(s.elapsed),
         score: scoreRef.current,
         lives: livesRef.current,
+        cashTotal: cashTotalRef.current,
         players: s.players.map((pl, i) => ({
           id: pl.id,
           x: round1(pl.x),
@@ -1081,6 +1144,9 @@ export default function FighterGame() {
         bullets: s.bullets
           .slice(0, MAX_SNAPSHOT_ENTITIES)
           .map((b) => ({ x: round1(b.x), y: round1(b.y), vy: round1(b.vy) })),
+        cash: s.cash
+          .slice(0, MAX_SNAPSHOT_ENTITIES)
+          .map((csh) => ({ x: round1(csh.x), y: round1(csh.y), vy: round1(csh.vy) })),
       };
     }
 
@@ -1176,6 +1242,26 @@ export default function FighterGame() {
       }
       s.enemies = s.enemies.filter((en) => en.y < s.height + 40);
 
+      // Cash drops on its own steady timer, independent of the enemy/bomb
+      // difficulty ramp — it's a recovery mechanic, not a hazard, so it
+      // shouldn't get scarcer as the run gets harder.
+      s.cashTimer -= dt;
+      if (s.cashTimer <= 0) {
+        s.cashTimer = 3 + Math.random() * 3;
+        s.cash.push({
+          x: 24 + Math.random() * (s.width - 48),
+          y: -20,
+          vy: 70 + Math.random() * 25,
+          phase: Math.random() * Math.PI * 2,
+        });
+      }
+      for (const csh of s.cash) {
+        csh.y += csh.vy * dt;
+        csh.phase += dt * 2.2;
+        csh.x = clamp(csh.x + Math.sin(csh.phase) * 16 * dt, 12, s.width - 12);
+      }
+      s.cash = s.cash.filter((csh) => csh.y < s.height + 30);
+
       for (const m of s.missiles) {
         let nearest = s.players[0];
         if (nearest) {
@@ -1231,6 +1317,34 @@ export default function FighterGame() {
         setScores([...scoresRef.current]);
         scoreRef.current = scoresRef.current.reduce((sum, v) => sum + (v ?? 0), 0);
         setScore(scoreRef.current);
+      }
+
+      // cash pickups — any plane flying through one collects it into the
+      // shared team total; every full CASH_PER_LIFE collected restores one
+      // life back into the shared pool (never past maxLives).
+      const collectedCash = new Set<Cash>();
+      for (const csh of s.cash) {
+        for (const pl of s.players) {
+          const r = PLAYER_HIT_RADIUS + CASH_HIT_RADIUS;
+          if (dist2(pl.x, pl.y, csh.x, csh.y) < r * r) {
+            collectedCash.add(csh);
+            break;
+          }
+        }
+      }
+      if (collectedCash.size) {
+        s.cash = s.cash.filter((csh) => !collectedCash.has(csh));
+        for (const csh of collectedCash) {
+          spawnExplosion(s.particles, csh.x, csh.y, ["#ffd75e", "#fff3c0", "#c98a1f"], 10);
+        }
+        const prevTotal = cashTotalRef.current;
+        const newTotal = prevTotal + collectedCash.size * CASH_VALUE;
+        cashTotalRef.current = newTotal;
+        setCashTotal(newTotal);
+        const livesToRestore = Math.floor(newTotal / CASH_PER_LIFE) - Math.floor(prevTotal / CASH_PER_LIFE);
+        if (livesToRestore > 0) {
+          setLives((lv) => Math.min(maxLivesRef.current, lv + livesToRestore));
+        }
       }
 
       // player collisions — shared lives pool across the whole team
@@ -1337,21 +1451,6 @@ export default function FighterGame() {
       if (timerValueRef.current) {
         timerValueRef.current.textContent = formatTime(Math.max(0, s.levelDuration - s.elapsed));
       }
-      if (phaseLabelRef.current) {
-        const label = phaseLabelRef.current;
-        const { bombFocus, swarmFocus } = phaseFocus(s.elapsed);
-        if (currentStatus !== "playing") {
-          label.style.opacity = "0";
-        } else if (bombFocus > swarmFocus && bombFocus > 0.55) {
-          label.textContent = "⚠ Bomber Wing Incoming";
-          label.style.opacity = String(clamp((bombFocus - 0.55) / 0.45, 0, 1));
-        } else if (swarmFocus > bombFocus && swarmFocus > 0.55) {
-          label.textContent = "⚠ Squadron Inbound";
-          label.style.opacity = String(clamp((swarmFocus - 0.55) / 0.45, 0, 1));
-        } else {
-          label.style.opacity = "0";
-        }
-      }
       const { width, height } = s;
       const sky = c.createLinearGradient(0, 0, 0, height);
       sky.addColorStop(0, "#155a9e");
@@ -1383,6 +1482,14 @@ export default function FighterGame() {
         c.translate(bm.x, bm.y);
         c.rotate(bm.rot);
         drawBomb(c);
+        c.restore();
+      }
+
+      // cash pickups
+      for (const csh of s.cash) {
+        c.save();
+        c.translate(csh.x, csh.y);
+        drawCash(c, Math.sin(csh.phase));
         c.restore();
       }
 
@@ -1484,6 +1591,10 @@ export default function FighterGame() {
             0:00
           </div>
         </div>
+        <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm text-center">
+          <div className="text-xs uppercase tracking-wide text-white/60">Cash</div>
+          <div className="text-lg font-bold tabular-nums leading-tight text-amber-300">${cashTotal}</div>
+        </div>
         <div className="flex gap-1.5 rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
           {Array.from({ length: maxLives }, (_, i) => (
             <span
@@ -1494,14 +1605,6 @@ export default function FighterGame() {
             </span>
           ))}
         </div>
-      </div>
-
-      <div className="pointer-events-none absolute inset-x-0 top-16 sm:top-20 z-10 flex justify-center text-center font-sans">
-        <span
-          ref={phaseLabelRef}
-          className="rounded-full bg-red-700/80 px-4 py-1 text-xs sm:text-sm font-bold uppercase tracking-wide text-white shadow-lg backdrop-blur-sm"
-          style={{ opacity: 0, transition: "opacity 300ms ease-out" }}
-        />
       </div>
 
       {status === "ready" && (
