@@ -2464,46 +2464,6 @@ export default function FighterGame() {
       c.fillStyle = sky;
       c.fillRect(0, 0, width, height);
 
-      // Distant planet — soft-lit crescent rather than a flat disc, so it
-      // reads as a lit sphere in space instead of a cartoon circle.
-      const { planet } = theme;
-      const glowR = c.createRadialGradient(planet.x, planet.y, planet.r * 0.7, planet.x, planet.y, planet.r * 1.6);
-      glowR.addColorStop(0, `${theme.palette.planetEdge}55`);
-      glowR.addColorStop(1, `${theme.palette.planetEdge}00`);
-      c.fillStyle = glowR;
-      c.beginPath();
-      c.arc(planet.x, planet.y, planet.r * 1.6, 0, Math.PI * 2);
-      c.fill();
-
-      if (planet.ring) {
-        c.save();
-        c.translate(planet.x, planet.y);
-        c.rotate(-0.35);
-        c.scale(1, 0.28);
-        c.beginPath();
-        c.arc(0, 0, planet.r * 1.55, 0, Math.PI * 2);
-        c.strokeStyle = `${theme.palette.planetCore}66`;
-        c.lineWidth = planet.r * 0.1;
-        c.stroke();
-        c.restore();
-      }
-
-      const bodyGrad = c.createRadialGradient(
-        planet.x - planet.r * 0.35,
-        planet.y - planet.r * 0.35,
-        planet.r * 0.1,
-        planet.x,
-        planet.y,
-        planet.r
-      );
-      bodyGrad.addColorStop(0, theme.palette.planetCore);
-      bodyGrad.addColorStop(0.55, theme.palette.planetEdge);
-      bodyGrad.addColorStop(1, "#000000");
-      c.fillStyle = bodyGrad;
-      c.beginPath();
-      c.arc(planet.x, planet.y, planet.r, 0, Math.PI * 2);
-      c.fill();
-
       for (const nb of s.nebulae) {
         const glow = c.createRadialGradient(nb.x, nb.y, 0, nb.x, nb.y, nb.r);
         glow.addColorStop(0, `rgba(${nb.color},0.12)`);
