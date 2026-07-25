@@ -171,11 +171,11 @@ function phaseFocus(elapsed: number) {
   return { bombFocus: Math.max(0, wave), swarmFocus: Math.max(0, -wave) };
 }
 
-// How long a level requires surviving to clear it: level 1 is a full 4
+// How long a level requires surviving to clear it: level 1 is a full 3
 // minutes, growing slowly and capping so a long campaign stays a
 // long-term goal rather than an ever-longer marathon.
 function levelSurviveDuration(level: number) {
-  return clamp(240 + (level - 1) * 4, 240, 360);
+  return clamp(180 + (level - 1) * 4, 180, 300);
 }
 
 // A symmetric wedge of relative {dx, dy} offsets for a burst of n enemies,
@@ -361,6 +361,38 @@ function spawnExplosion(particles: Particle[], x: number, y: number, colorSet: s
   }
 }
 
+// The fuselage outline is identical on every call (only fill color and
+// ctx.scale differ) — built lazily once on first use (not at module top
+// level, so this stays safe if the module is ever touched outside a
+// browser) and reused from then on, instead of re-issuing the same ~18
+// path commands into a brand new Path2D every single jet, every frame.
+let fuselagePathCache: Path2D | null = null;
+function getFuselagePath(): Path2D {
+  if (fuselagePathCache) return fuselagePathCache;
+  const fuselage = new Path2D();
+  fuselage.moveTo(0, -24);
+  fuselage.bezierCurveTo(3, -21, 5, -15, 5, -8);
+  fuselage.lineTo(19, 3);
+  fuselage.lineTo(20.5, 7.5);
+  fuselage.lineTo(6, 6.5);
+  fuselage.lineTo(7, 15.5);
+  fuselage.lineTo(13.5, 19.5);
+  fuselage.lineTo(4, 18.5);
+  fuselage.lineTo(3.2, 23.5);
+  fuselage.lineTo(-3.2, 23.5);
+  fuselage.lineTo(-4, 18.5);
+  fuselage.lineTo(-13.5, 19.5);
+  fuselage.lineTo(-7, 15.5);
+  fuselage.lineTo(-6, 6.5);
+  fuselage.lineTo(-20.5, 7.5);
+  fuselage.lineTo(-19, 3);
+  fuselage.lineTo(-5, -8);
+  fuselage.bezierCurveTo(-5, -15, -3, -21, 0, -24);
+  fuselage.closePath();
+  fuselagePathCache = fuselage;
+  return fuselage;
+}
+
 // A soft, fixed-direction drop shadow — drawn before any bank rotation is
 // applied to the jet above it, so the shadow stays "cast on a surface
 // behind the plane" instead of rotating with it. That fixed offset against
@@ -412,48 +444,29 @@ function drawJet(
   ctx.closePath();
   ctx.fill();
 
-  // Fuselage + delta wings + tail silhouette. Built as a Path2D (rather
-  // than immediate draw calls) so the exact same outline can be reused
-  // below as a clip region for the cross-body highlight/shadow pass — that
-  // second pass, a light-from-one-side gradient clipped to the fuselage, is
-  // what turns a flat-shaded silhouette into something that reads as a
-  // rounded, lit 3D body instead of a paper cutout.
+  // Fuselage + delta wings + tail silhouette — the same cached Path2D is
+  // reused below as a clip region for the cross-body highlight/shadow pass:
+  // a light-from-one-side gradient confined to the fuselage, which is what
+  // turns a flat-shaded silhouette into something that reads as a rounded,
+  // lit 3D body instead of a paper cutout.
   const grad = ctx.createLinearGradient(0, -24, 0, 24);
   grad.addColorStop(0, scheme.bodyTop);
   grad.addColorStop(1, scheme.bodyBottom);
 
-  const fuselage = new Path2D();
-  fuselage.moveTo(0, -24);
-  fuselage.bezierCurveTo(3, -21, 5, -15, 5, -8);
-  fuselage.lineTo(19, 3);
-  fuselage.lineTo(20.5, 7.5);
-  fuselage.lineTo(6, 6.5);
-  fuselage.lineTo(7, 15.5);
-  fuselage.lineTo(13.5, 19.5);
-  fuselage.lineTo(4, 18.5);
-  fuselage.lineTo(3.2, 23.5);
-  fuselage.lineTo(-3.2, 23.5);
-  fuselage.lineTo(-4, 18.5);
-  fuselage.lineTo(-13.5, 19.5);
-  fuselage.lineTo(-7, 15.5);
-  fuselage.lineTo(-6, 6.5);
-  fuselage.lineTo(-20.5, 7.5);
-  fuselage.lineTo(-19, 3);
-  fuselage.lineTo(-5, -8);
-  fuselage.bezierCurveTo(-5, -15, -3, -21, 0, -24);
-  fuselage.closePath();
+  const fuselage = getFuselagePath();
   ctx.fillStyle = grad;
   ctx.fill(fuselage);
   ctx.lineWidth = 0.7;
   ctx.strokeStyle = scheme.stroke;
   ctx.stroke(fuselage);
 
-  // "source-atop" only paints over pixels the fuselage fill already
-  // touched, giving the same confined-to-the-silhouette result as clip()
-  // without the per-frame clip-mask cost — cheaper on real (especially
-  // mobile) hardware with a dozen-plus jets on screen at once.
+  // clip() confines this fill to the fuselage shape correctly. (An earlier
+  // attempt used globalCompositeOperation "source-atop" as a cheaper
+  // alternative, but that composites against the *entire* canvas drawn so
+  // far — not just this shape — so it painted a visible rectangle instead
+  // of staying inside the silhouette. clip() is the correct tool here.)
   ctx.save();
-  ctx.globalCompositeOperation = "source-atop";
+  ctx.clip(fuselage);
   const volumeGrad = ctx.createLinearGradient(-9, 0, 9, 0);
   volumeGrad.addColorStop(0, "rgba(255,255,255,0.42)");
   volumeGrad.addColorStop(0.32, "rgba(255,255,255,0.12)");
@@ -788,7 +801,6 @@ export default function FighterGame() {
   const rafRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
   const timerValueRef = useRef<HTMLDivElement | null>(null);
-  const midpointWarningRef = useRef<HTMLDivElement | null>(null);
   const lobbyModeRef = useRef<LobbyMode>("solo");
   const musicPlayerRef = useRef<MusicPlayer | null>(null);
   // Purely a rendering-layer effect (not gameplay state, not networked):
@@ -1871,14 +1883,6 @@ export default function FighterGame() {
       if (timerValueRef.current) {
         timerValueRef.current.textContent = formatTime(Math.max(0, s.levelDuration - s.elapsed));
       }
-      if (midpointWarningRef.current) {
-        // Derived purely from elapsed/levelDuration (already synced to the
-        // ally via the normal snapshot) rather than a networked flag, so
-        // this reads identically on host, solo, and ally.
-        const halfway = s.levelDuration / 2;
-        const showWarning = currentStatus === "playing" && s.elapsed >= halfway - 3.5 && s.elapsed < halfway;
-        midpointWarningRef.current.style.opacity = showWarning ? "1" : "0";
-      }
       const { width, height } = s;
       const sky = c.createLinearGradient(0, 0, 0, height);
       sky.addColorStop(0, "#05060f");
@@ -2066,16 +2070,6 @@ export default function FighterGame() {
           >
             {musicMuted ? "🔇" : "🔊"}
           </button>
-        </div>
-      </div>
-
-      <div className="pointer-events-none absolute inset-x-0 top-16 sm:top-20 z-10 flex justify-center text-center font-sans">
-        <div
-          ref={midpointWarningRef}
-          className="rounded-full bg-red-700/80 px-4 py-1 text-xs sm:text-sm font-bold uppercase tracking-wide text-white shadow-lg backdrop-blur-sm"
-          style={{ opacity: 0, transition: "opacity 300ms ease-out" }}
-        >
-          ⚠ An Army of Enemy Planes is Approaching!
         </div>
       </div>
 
