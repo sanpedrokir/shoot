@@ -45,6 +45,10 @@ type Particle = {
   color: string;
 };
 type Star = { x: number; y: number; r: number; speed: number; opacity: number; twinklePhase: number };
+// A handful of huge, barely-moving, very-low-opacity glow blobs far behind
+// the stars — the near-static "background" layer that makes the fast
+// foreground stars actually read as parallax depth instead of just noise.
+type Nebula = { x: number; y: number; r: number; speed: number; color: string };
 
 type Player = {
   id: string;
@@ -74,6 +78,7 @@ interface GameState {
   shields: Shield[];
   particles: Particle[];
   stars: Star[];
+  nebulae: Nebula[];
   spawnTimer: number;
   shieldTimer: number;
   elapsed: number;
@@ -212,13 +217,28 @@ function makePlayers(width: number, height: number, playerIds: string[]): Player
 }
 
 function makeInitialState(width: number, height: number, level: number, playerIds: string[]): GameState {
-  const stars: Star[] = Array.from({ length: 70 }, () => ({
+  // Size, speed, and brightness all driven off the same random "depth" so
+  // they stay consistent with each other — a star that's bigger and
+  // brighter also moves faster, exactly like something genuinely closer to
+  // the camera would, instead of those three cues fighting each other.
+  const stars: Star[] = Array.from({ length: 70 }, () => {
+    const depth = Math.random();
+    return {
+      x: Math.random() * width,
+      y: Math.random() * height,
+      r: 0.5 + depth * 1.8,
+      speed: 16 + depth * 75,
+      opacity: 0.25 + depth * 0.65,
+      twinklePhase: Math.random() * Math.PI * 2,
+    };
+  });
+  const nebulaColors = ["120,80,220", "40,140,200", "180,60,140"];
+  const nebulae: Nebula[] = Array.from({ length: 3 }, () => ({
     x: Math.random() * width,
     y: Math.random() * height,
-    r: 0.6 + Math.random() * 1.6,
-    speed: 20 + Math.random() * 60,
-    opacity: 0.3 + Math.random() * 0.7,
-    twinklePhase: Math.random() * Math.PI * 2,
+    r: 140 + Math.random() * 100,
+    speed: 3 + Math.random() * 5,
+    color: nebulaColors[Math.floor(Math.random() * nebulaColors.length)],
   }));
   return {
     width,
@@ -233,6 +253,7 @@ function makeInitialState(width: number, height: number, level: number, playerId
     shields: [],
     particles: [],
     stars,
+    nebulae,
     spawnTimer: 0.6,
     shieldTimer: 2 + Math.random() * 2,
     elapsed: 0,
@@ -340,6 +361,24 @@ function spawnExplosion(particles: Particle[], x: number, y: number, colorSet: s
   }
 }
 
+// A soft, fixed-direction drop shadow — drawn before any bank rotation is
+// applied to the jet above it, so the shadow stays "cast on a surface
+// behind the plane" instead of rotating with it. That fixed offset against
+// a rotating sprite is what sells the sprite as floating above something
+// rather than being flat against the background.
+function drawJetShadow(ctx: CanvasRenderingContext2D, scale: number) {
+  ctx.save();
+  ctx.scale(scale, scale);
+  const grad = ctx.createRadialGradient(3, 9, 0, 3, 9, 17);
+  grad.addColorStop(0, "rgba(0,0,0,0.4)");
+  grad.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.ellipse(3, 9, 15, 8, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
 // Draws a shaded, detailed fighter-jet silhouette pointing "up" in local space
 // before rotation is applied by the caller.
 function drawJet(
@@ -373,36 +412,52 @@ function drawJet(
   ctx.closePath();
   ctx.fill();
 
-  // Fuselage + delta wings + tail silhouette
+  // Fuselage + delta wings + tail silhouette. Built as a Path2D (rather
+  // than immediate draw calls) so the exact same outline can be reused
+  // below as a clip region for the cross-body highlight/shadow pass — that
+  // second pass, a light-from-one-side gradient clipped to the fuselage, is
+  // what turns a flat-shaded silhouette into something that reads as a
+  // rounded, lit 3D body instead of a paper cutout.
   const grad = ctx.createLinearGradient(0, -24, 0, 24);
   grad.addColorStop(0, scheme.bodyTop);
   grad.addColorStop(1, scheme.bodyBottom);
 
-  ctx.beginPath();
-  ctx.moveTo(0, -24);
-  ctx.bezierCurveTo(3, -21, 5, -15, 5, -8);
-  ctx.lineTo(19, 3);
-  ctx.lineTo(20.5, 7.5);
-  ctx.lineTo(6, 6.5);
-  ctx.lineTo(7, 15.5);
-  ctx.lineTo(13.5, 19.5);
-  ctx.lineTo(4, 18.5);
-  ctx.lineTo(3.2, 23.5);
-  ctx.lineTo(-3.2, 23.5);
-  ctx.lineTo(-4, 18.5);
-  ctx.lineTo(-13.5, 19.5);
-  ctx.lineTo(-7, 15.5);
-  ctx.lineTo(-6, 6.5);
-  ctx.lineTo(-20.5, 7.5);
-  ctx.lineTo(-19, 3);
-  ctx.lineTo(-5, -8);
-  ctx.bezierCurveTo(-5, -15, -3, -21, 0, -24);
-  ctx.closePath();
+  const fuselage = new Path2D();
+  fuselage.moveTo(0, -24);
+  fuselage.bezierCurveTo(3, -21, 5, -15, 5, -8);
+  fuselage.lineTo(19, 3);
+  fuselage.lineTo(20.5, 7.5);
+  fuselage.lineTo(6, 6.5);
+  fuselage.lineTo(7, 15.5);
+  fuselage.lineTo(13.5, 19.5);
+  fuselage.lineTo(4, 18.5);
+  fuselage.lineTo(3.2, 23.5);
+  fuselage.lineTo(-3.2, 23.5);
+  fuselage.lineTo(-4, 18.5);
+  fuselage.lineTo(-13.5, 19.5);
+  fuselage.lineTo(-7, 15.5);
+  fuselage.lineTo(-6, 6.5);
+  fuselage.lineTo(-20.5, 7.5);
+  fuselage.lineTo(-19, 3);
+  fuselage.lineTo(-5, -8);
+  fuselage.bezierCurveTo(-5, -15, -3, -21, 0, -24);
+  fuselage.closePath();
   ctx.fillStyle = grad;
-  ctx.fill();
+  ctx.fill(fuselage);
   ctx.lineWidth = 0.7;
   ctx.strokeStyle = scheme.stroke;
-  ctx.stroke();
+  ctx.stroke(fuselage);
+
+  ctx.save();
+  ctx.clip(fuselage);
+  const volumeGrad = ctx.createLinearGradient(-9, 0, 9, 0);
+  volumeGrad.addColorStop(0, "rgba(255,255,255,0.42)");
+  volumeGrad.addColorStop(0.32, "rgba(255,255,255,0.12)");
+  volumeGrad.addColorStop(0.55, "rgba(0,0,0,0)");
+  volumeGrad.addColorStop(1, "rgba(0,0,0,0.35)");
+  ctx.fillStyle = volumeGrad;
+  ctx.fillRect(-24, -26, 48, 52);
+  ctx.restore();
 
   // Wing accent stripes
   ctx.fillStyle = scheme.accent;
@@ -732,6 +787,12 @@ export default function FighterGame() {
   const midpointWarningRef = useRef<HTMLDivElement | null>(null);
   const lobbyModeRef = useRef<LobbyMode>("solo");
   const musicPlayerRef = useRef<MusicPlayer | null>(null);
+  // Purely a rendering-layer effect (not gameplay state, not networked):
+  // each client tracks its own previous-frame x per player id and eases
+  // toward a bank angle from the horizontal delta, so planes visibly lean
+  // into turns instead of sliding around perfectly upright.
+  const playerLastXRef = useRef<Map<string, number>>(new Map());
+  const playerBankRef = useRef<Map<string, number>>(new Map());
 
   const localIdRef = useRef<string>("");
   const netRoleRef = useRef<NetRole>("solo");
@@ -796,6 +857,15 @@ export default function FighterGame() {
   const userRef = useRef<AuthUser | null>(null);
   const [refreshLeaderboardKey, setRefreshLeaderboardKey] = useState(0);
   const [globalTop, setGlobalTop] = useState<LeaderboardTop | null>(null);
+  // True while the sign-up/log-in form has unsubmitted nickname/password
+  // text sitting in it — Start is held off until the player either finishes
+  // that (so their score doesn't silently end up on a guest session) or
+  // clears the fields to play as a guest on purpose.
+  const [authPending, setAuthPending] = useState(false);
+  const authPendingRef = useRef(false);
+  useEffect(() => {
+    authPendingRef.current = authPending;
+  }, [authPending]);
 
   const [musicMuted, setMusicMuted] = useState(false);
 
@@ -964,6 +1034,7 @@ export default function FighterGame() {
   };
 
   const handleStart = () => {
+    if (authPending) return;
     if (lobbyMode === "solo") startSolo();
     else if (lobbyMode === "host") hostStartOrRestart();
   };
@@ -1052,7 +1123,7 @@ export default function FighterGame() {
         pl.targetX = p.x;
         pl.targetY = p.y;
       }
-      if (statusRef.current === "ready" && lobbyModeRef.current === "solo") {
+      if (statusRef.current === "ready" && lobbyModeRef.current === "solo" && !authPendingRef.current) {
         startSolo();
       }
       e.preventDefault();
@@ -1081,11 +1152,17 @@ export default function FighterGame() {
     canvas.style.touchAction = "none";
 
     const onKeyDown = (e: KeyboardEvent) => {
+      // This listener is on window, so without this guard, typing into the
+      // sign-up form's nickname/password fields (which can easily contain
+      // w/a/s/d or arrow characters) would both steer the plane and
+      // auto-start a solo game mid-typing, well before Start is pressed.
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) return;
       const keys = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "w", "a", "s", "d", "W", "A", "S", "D"];
       if (keys.includes(e.key)) {
         e.preventDefault();
         stateRef.current?.keys.add(e.key.toLowerCase());
-        if (statusRef.current === "ready" && lobbyModeRef.current === "solo") {
+        if (statusRef.current === "ready" && lobbyModeRef.current === "solo" && !authPendingRef.current) {
           startSolo();
         }
       }
@@ -1190,6 +1267,24 @@ export default function FighterGame() {
     // cap), so without this everything but the ally's own plane would freeze
     // between updates and visibly teleport — this is what read as "lag".
     function extrapolateAlly(s: GameState, dt: number) {
+      // Purely decorative background layers — never networked, so each
+      // client just drifts its own local copy every frame regardless of
+      // role, instead of only moving on the host/solo simulation tick.
+      for (const st of s.stars) {
+        st.y += st.speed * dt;
+        st.twinklePhase += dt * 3;
+        if (st.y - st.r > s.height) {
+          st.y = -st.r;
+          st.x = Math.random() * s.width;
+        }
+      }
+      for (const nb of s.nebulae) {
+        nb.y += nb.speed * dt;
+        if (nb.y - nb.r > s.height) {
+          nb.y = -nb.r;
+          nb.x = Math.random() * s.width;
+        }
+      }
       for (const pl of s.players) {
         if (pl.id === localIdRef.current) continue;
         pl.x += (pl.targetX - pl.x) * Math.min(1, dt * 10);
@@ -1359,6 +1454,16 @@ export default function FighterGame() {
         if (st.y - st.r > s.height) {
           st.y = -st.r;
           st.x = Math.random() * s.width;
+        }
+      }
+
+      // nebulae — same drift-and-wrap as stars, just much slower (they're
+      // meant to read as far behind everything else).
+      for (const nb of s.nebulae) {
+        nb.y += nb.speed * dt;
+        if (nb.y - nb.r > s.height) {
+          nb.y = -nb.r;
+          nb.x = Math.random() * s.width;
         }
       }
 
@@ -1779,6 +1884,16 @@ export default function FighterGame() {
       c.fillStyle = sky;
       c.fillRect(0, 0, width, height);
 
+      for (const nb of s.nebulae) {
+        const glow = c.createRadialGradient(nb.x, nb.y, 0, nb.x, nb.y, nb.r);
+        glow.addColorStop(0, `rgba(${nb.color},0.12)`);
+        glow.addColorStop(1, `rgba(${nb.color},0)`);
+        c.fillStyle = glow;
+        c.beginPath();
+        c.arc(nb.x, nb.y, nb.r, 0, Math.PI * 2);
+        c.fill();
+      }
+
       c.save();
       for (const st of s.stars) {
         const twinkle = 0.7 + 0.3 * Math.sin(st.twinklePhase);
@@ -1821,22 +1936,39 @@ export default function FighterGame() {
         c.restore();
       }
 
-      // enemies
+      // enemies — bank angle approximates each one's current sideways
+      // velocity (the derivative of whichever sway/orbit motion it's using)
+      // so the lean visibly matches the direction it's actually moving.
       for (const en of s.enemies) {
+        const sidewaysVel = en.orbit
+          ? -Math.sin(en.orbit.angle) * en.orbit.radius * en.orbit.speed
+          : Math.cos(en.phase) * en.amp * 1.6;
+        const bank = clamp(sidewaysVel * 0.018, -0.5, 0.5);
         c.save();
         c.translate(en.x, en.y);
-        c.rotate(Math.PI);
+        drawJetShadow(c, en.scale);
+        c.rotate(Math.PI + bank);
         drawJet(c, en.scale, Math.abs(Math.sin(s.elapsed * 18 + en.phase)), ENEMY_SCHEME);
         c.restore();
       }
 
-      // players
+      // players — bank eased from this client's own frame-to-frame x delta
+      // for whichever plane it's rendering (own, host's, or ally's), purely
+      // a local visual touch that isn't networked or gameplay-affecting.
       if (currentStatus !== "gameover") {
         s.players.forEach((pl, i) => {
           const flashHidden = pl.invuln > 0 && Math.floor(pl.invuln * 10) % 2 === 0;
           if (flashHidden) return;
+          const prevX = playerLastXRef.current.get(pl.id) ?? pl.x;
+          const targetBank = clamp((pl.x - prevX) * 0.07, -0.5, 0.5);
+          playerLastXRef.current.set(pl.id, pl.x);
+          const prevBank = playerBankRef.current.get(pl.id) ?? 0;
+          const bank = prevBank + (targetBank - prevBank) * 0.3;
+          playerBankRef.current.set(pl.id, bank);
           c.save();
           c.translate(pl.x, pl.y);
+          drawJetShadow(c, 1);
+          c.rotate(bank);
           drawJet(c, 1, Math.abs(Math.sin(s.elapsed * 22)), PLAYER_SCHEMES[i % PLAYER_SCHEMES.length]);
           c.restore();
         });
@@ -2036,12 +2168,14 @@ export default function FighterGame() {
             onUserChange={handleUserChange}
             refreshLeaderboardKey={refreshLeaderboardKey}
             onTopChange={setGlobalTop}
+            onPendingAuthChange={setAuthPending}
           />
 
           {(lobbyMode === "solo" || (lobbyMode === "host" && connStatus === "connected")) && (
             <button
               onClick={handleStart}
-              className="mt-1 rounded-full bg-blue-600 px-8 py-3 text-base font-bold shadow-lg shadow-blue-900/40 active:scale-95 transition-transform"
+              disabled={authPending}
+              className="mt-1 rounded-full bg-blue-600 px-8 py-3 text-base font-bold shadow-lg shadow-blue-900/40 active:scale-95 transition-transform disabled:opacity-40 disabled:active:scale-100"
             >
               Start
             </button>

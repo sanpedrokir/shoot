@@ -17,6 +17,12 @@ interface AuthPanelProps {
   onUserChange: (user: AuthUser | null) => void;
   refreshLeaderboardKey: number;
   onTopChange?: (top: LeaderboardTop | null) => void;
+  // Fires whenever there's nickname/password text sitting unsubmitted (and
+  // the player isn't logged in) — the parent uses this to hold off on
+  // Start, so typing into the sign-up form and tapping Start doesn't
+  // silently discard it and launch a guest game instead. Clearing the
+  // fields (going back to "just play as guest") releases the hold.
+  onPendingAuthChange?: (pending: boolean) => void;
 }
 
 function readLocalProgress(): { highScore: number; maxLevel: number } {
@@ -41,7 +47,7 @@ function storeLocalProgress(highScore: number, maxLevel: number) {
 
 type Mode = "login" | "register";
 
-export default function AuthPanel({ onUserChange, refreshLeaderboardKey, onTopChange }: AuthPanelProps) {
+export default function AuthPanel({ onUserChange, refreshLeaderboardKey, onTopChange, onPendingAuthChange }: AuthPanelProps) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [checkedSession, setCheckedSession] = useState(false);
   const [mode, setMode] = useState<Mode>("login");
@@ -79,6 +85,13 @@ export default function AuthPanel({ onUserChange, refreshLeaderboardKey, onTopCh
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshLeaderboardKey]);
 
+  useEffect(() => {
+    onPendingAuthChange?.(!user && (nickname.trim().length > 0 || password.length > 0));
+    // onPendingAuthChange is a fresh closure each render; only re-evaluate
+    // when the actual pending state (user/nickname/password) changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, nickname, password]);
+
   const submit = async () => {
     setError("");
     if (!nickname.trim() || !password) {
@@ -115,6 +128,12 @@ export default function AuthPanel({ onUserChange, refreshLeaderboardKey, onTopCh
     }
   };
 
+  const clearAndPlayAsGuest = () => {
+    setNickname("");
+    setPassword("");
+    setError("");
+  };
+
   const logout = async () => {
     try {
       await fetch("/api/auth/logout", { method: "POST" });
@@ -124,6 +143,8 @@ export default function AuthPanel({ onUserChange, refreshLeaderboardKey, onTopCh
     setUser(null);
     onUserChange(null);
   };
+
+  const hasPendingInput = !user && (nickname.trim().length > 0 || password.length > 0);
 
   return (
     <div className="flex flex-col items-center gap-2 text-white">
@@ -191,6 +212,15 @@ export default function AuthPanel({ onUserChange, refreshLeaderboardKey, onTopCh
           >
             {submitting ? "…" : mode === "login" ? "Log In" : "Create Account"}
           </button>
+          {hasPendingInput && (
+            <p className="text-center text-[11px] text-amber-200">
+              {mode === "login" ? "Log in" : "Create your account"} above to play under this name, or{" "}
+              <button onClick={clearAndPlayAsGuest} className="underline underline-offset-2">
+                clear to play as guest
+              </button>
+              .
+            </p>
+          )}
         </div>
       ))}
     </div>
