@@ -175,6 +175,28 @@ function locationIndexForLevel(level: number): number {
   return Math.floor((level - 1) / 3) + 1;
 }
 
+// Which of the 3 levels within the current location this is (1, 2, or 3) —
+// shown alongside the location name so the "survive 3 levels to unlock the
+// next location" structure is visible, not just implied.
+function levelWithinLocation(level: number): number {
+  return ((level - 1) % 3) + 1;
+}
+
+// A 3-segment progress bar for that sub-index — reused on the main menu and
+// the survive screen so the same visual language shows up in both places.
+function LocationProgressDots({ current }: { current: number }) {
+  return (
+    <div className="flex gap-1">
+      {[1, 2, 3].map((n) => (
+        <span
+          key={n}
+          className={`h-1.5 w-5 rounded-full ${n <= current ? "bg-emerald-400" : "bg-white/20"}`}
+        />
+      ))}
+    </div>
+  );
+}
+
 // A tiny seeded PRNG (mulberry32) so "the same location always looks the
 // same" without needing to network any of this — both host and ally derive
 // it purely from the location index.
@@ -2679,7 +2701,9 @@ export default function FighterGame() {
           <div className="flex items-center justify-between px-5 pt-6 pb-3">
             <div>
               <h2 className="text-xl font-extrabold tracking-tight">Locations</h2>
-              <p className="text-[11px] text-white/50">Tap an unlocked location to start your next run there.</p>
+              <p className="text-[11px] text-white/50">
+                Survive 3 levels to unlock the next location. Tap an unlocked one to start there.
+              </p>
             </div>
             <button
               onClick={() => setShowLocations(false)}
@@ -2786,16 +2810,24 @@ export default function FighterGame() {
           </div>
 
           {lobbyMode === "solo" && (
-            <button
-              onClick={() => setShowLocations(true)}
-              className="flex w-64 flex-col items-center gap-0.5 rounded-xl bg-white/10 px-4 py-2.5 active:scale-95 transition-transform"
-            >
-              <span className="text-[10px] uppercase tracking-wide text-white/50">Starting Location</span>
-              <span className="text-sm font-bold">
-                🌌 {getLocationName(locationIndexForLevel(soloStartLevel))}
-              </span>
-              <span className="text-[11px] text-white/60">Level {soloStartLevel} · tap to browse</span>
-            </button>
+            <div className="flex w-64 flex-col items-center gap-2 rounded-xl bg-white/10 px-4 py-3">
+              <div className="flex flex-col items-center gap-1">
+                <span className="text-[10px] uppercase tracking-wide text-white/50">Flying From</span>
+                <span className="text-sm font-bold">
+                  🌌 {getLocationName(locationIndexForLevel(soloStartLevel))}
+                </span>
+                <LocationProgressDots current={levelWithinLocation(soloStartLevel)} />
+                <span className="text-[10px] text-white/50">
+                  Level {levelWithinLocation(soloStartLevel)} of 3
+                </span>
+              </div>
+              <button
+                onClick={() => setShowLocations(true)}
+                className="rounded-full bg-white/15 px-4 py-1.5 text-xs font-semibold active:scale-95 transition-transform"
+              >
+                🗺️ Browse Locations
+              </button>
+            </div>
           )}
 
           {lobbyMode === "daily" && (
@@ -2916,11 +2948,18 @@ export default function FighterGame() {
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/65 px-6 text-center text-white font-sans">
           <h2 className="text-3xl font-extrabold">You Survived!</h2>
           {isProgressiveRun && (
-            <p className="text-sm font-semibold text-emerald-300">
-              {justUnlockedLocation
-                ? `🔓 New location unlocked: ${justUnlockedLocation}`
-                : `Up next: Level ${soloStartLevel} · ${getLocationName(locationIndexForLevel(soloStartLevel))}`}
-            </p>
+            <div className="flex flex-col items-center gap-1.5">
+              {justUnlockedLocation && (
+                <p className="text-sm font-semibold text-emerald-300">
+                  🔓 New location unlocked: {justUnlockedLocation}
+                </p>
+              )}
+              <p className="text-sm text-white/80">
+                Next: {getLocationName(locationIndexForLevel(soloStartLevel))} · Level{" "}
+                {levelWithinLocation(soloStartLevel)} of 3
+              </p>
+              <LocationProgressDots current={levelWithinLocation(soloStartLevel)} />
+            </div>
           )}
           <p className="text-lg">
             Your Score: <span className="font-bold">{score.toLocaleString()}</span>
