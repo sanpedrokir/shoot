@@ -12,7 +12,7 @@ import {
   type StartMessage,
   type NetSnapshot,
 } from "../lib/coop";
-import { createRiffPlayer, type RiffPlayer } from "../lib/riffPlayer";
+import { createMusicPlayer, type MusicPlayer } from "../lib/musicPlayer";
 import AuthPanel, { type AuthUser } from "./AuthPanel";
 
 type Bullet = { x: number; y: number; vy: number; ownerId: string };
@@ -74,6 +74,11 @@ interface GameState {
   elapsed: number;
   pointerDown: boolean;
   keys: Set<string>;
+  // Host/solo-only simulation state for the halfway-mark "army incoming"
+  // event — not networked, since the ally sees its effects (the extra
+  // enemies, the bomb lull) purely through the normal snapshot sync.
+  midpointWaveSpawned: boolean;
+  bombsSuppressedUntil: number;
 }
 
 const PLAYER_RADIUS = 14;
@@ -166,6 +171,22 @@ function wedgeFormation(n: number, spacing: number, dropStep: number): { dx: num
   });
 }
 
+// A dense, brick-staggered grid burst — the "an army of enemy planes" event
+// at a level's halfway mark, visually distinct from the small wedge bursts
+// that spawn the rest of the time. Rear rows are shifted further back so the
+// whole block reads as arriving together rather than a single flat rank.
+function gridFormation(rows: number, cols: number, spacingX: number, spacingY: number): { dx: number; dy: number }[] {
+  const halfCols = (cols - 1) / 2;
+  const offsets: { dx: number; dy: number }[] = [];
+  for (let r = 0; r < rows; r++) {
+    const rowStagger = r % 2 === 1 ? spacingX / 2 : 0;
+    for (let c = 0; c < cols; c++) {
+      offsets.push({ dx: (c - halfCols) * spacingX + rowStagger, dy: -r * spacingY });
+    }
+  }
+  return offsets;
+}
+
 function makePlayers(width: number, height: number, playerIds: string[]): Player[] {
   const n = playerIds.length;
   return playerIds.map((id, i) => {
@@ -202,6 +223,8 @@ function makeInitialState(width: number, height: number, level: number, playerId
     elapsed: 0,
     pointerDown: false,
     keys: new Set(),
+    midpointWaveSpawned: false,
+    bombsSuppressedUntil: 0,
   };
 }
 
@@ -688,8 +711,9 @@ export default function FighterGame() {
   const rafRef = useRef<number>(0);
   const lastTimeRef = useRef<number>(0);
   const timerValueRef = useRef<HTMLDivElement | null>(null);
+  const midpointWarningRef = useRef<HTMLDivElement | null>(null);
   const lobbyModeRef = useRef<LobbyMode>("solo");
-  const riffPlayerRef = useRef<RiffPlayer | null>(null);
+  const musicPlayerRef = useRef<MusicPlayer | null>(null);
 
   const localIdRef = useRef<string>("");
   const netRoleRef = useRef<NetRole>("solo");
@@ -761,15 +785,15 @@ export default function FighterGame() {
   }, []);
 
   useEffect(() => {
-    riffPlayerRef.current = createRiffPlayer();
+    musicPlayerRef.current = createMusicPlayer("/audio/theme.mp3");
     return () => {
-      riffPlayerRef.current?.dispose();
-      riffPlayerRef.current = null;
+      musicPlayerRef.current?.dispose();
+      musicPlayerRef.current = null;
     };
   }, []);
 
   useEffect(() => {
-    riffPlayerRef.current?.setMuted(musicMuted);
+    musicPlayerRef.current?.setMuted(musicMuted);
   }, [musicMuted]);
 
   useEffect(() => {
@@ -841,7 +865,7 @@ export default function FighterGame() {
     // this call and the next React commit.
     statusRef.current = "playing";
     setStatus("playing");
-    riffPlayerRef.current?.start();
+    musicPlayerRef.current?.start();
   };
 
   const startSolo = () => {
@@ -849,7 +873,7 @@ export default function FighterGame() {
   };
 
   const hostRoom = () => {
-    riffPlayerRef.current?.unlock();
+    musicPlayerRef.current?.unlock();
     const code = generateRoomCode();
     setRoomCode(code);
     setConnStatus("connecting");
@@ -885,7 +909,7 @@ export default function FighterGame() {
   };
 
   const joinRoom = (code: string) => {
-    riffPlayerRef.current?.unlock();
+    musicPlayerRef.current?.unlock();
     if (!/^\d{3}$/.test(code)) {
       setConnStatus("error");
       setConnError("Enter the 3-digit code your host shared.");
@@ -915,7 +939,7 @@ export default function FighterGame() {
         setHostLeft(true);
         statusRef.current = "gameover";
         setStatus("gameover");
-        riffPlayerRef.current?.stop();
+        musicPlayerRef.current?.stop();
       }
     });
   };
@@ -936,14 +960,14 @@ export default function FighterGame() {
     setNetRole("solo");
     netRoleRef.current = "solo";
     setStatus("ready");
-    riffPlayerRef.current?.stop();
+    musicPlayerRef.current?.stop();
   };
 
   const handleQuit = () => {
     resetLobby();
     statusRef.current = "quit";
     setStatus("quit");
-    riffPlayerRef.current?.stop();
+    musicPlayerRef.current?.stop();
   };
 
   const handleUserChange = (u: AuthUser | null) => {
@@ -1225,8 +1249,8 @@ export default function FighterGame() {
       if (snap.status !== statusRef.current) {
         statusRef.current = snap.status;
         setStatus(snap.status);
-        if (snap.status === "playing") riffPlayerRef.current?.start();
-        else riffPlayerRef.current?.stop();
+        if (snap.status === "playing") musicPlayerRef.current?.start();
+        else musicPlayerRef.current?.stop();
       }
     }
 
@@ -1340,6 +1364,37 @@ export default function FighterGame() {
         }
       }
 
+      // "An army of enemy planes" — once per level, at the halfway mark, a
+      // dense grid formation arrives all at once instead of the usual small
+      // wedge bursts. A warning banner (driven purely off elapsed/
+      // levelDuration in render(), so it works identically for the ally too)
+      // leads into it, and bombs are held off for a stretch afterward so the
+      // player can focus on shooting the wave down instead of also dodging
+      // bomb drops.
+      if (!s.midpointWaveSpawned && s.elapsed >= s.levelDuration / 2) {
+        s.midpointWaveSpawned = true;
+        const rows = 3;
+        const cols = 4;
+        const spacingX = 46;
+        const offsets = gridFormation(rows, cols, spacingX, 42);
+        const maxAbsDx = Math.max(...offsets.map((o) => Math.abs(o.dx)));
+        const margin = 30 + maxAbsDx;
+        const anchorX = clamp(s.width / 2, margin, Math.max(margin, s.width - margin));
+        for (const offset of offsets) {
+          s.enemies.push({
+            x: clamp(anchorX + offset.dx, 30, s.width - 30),
+            y: -30 + offset.dy,
+            vy: 50 + Math.random() * 30 + Math.min(difficulty, 8) * 35,
+            phase: Math.random() * Math.PI * 2,
+            amp: 15 + Math.random() * 25,
+            scale: 0.8 + Math.random() * 0.3,
+            fireTimer: 1.8 + Math.random() * 1.8,
+            bombTimer: 1.2 + Math.random() * 2.2,
+          });
+        }
+        s.bombsSuppressedUntil = s.elapsed + 10;
+      }
+
       for (const en of s.enemies) {
         en.y += en.vy * dt;
         en.phase += dt * 1.6;
@@ -1369,7 +1424,12 @@ export default function FighterGame() {
         en.bombTimer -= dt;
         if (en.bombTimer <= 0 && en.y > 10 && en.y < s.height - 100) {
           en.bombTimer = clamp(2.8 - difficulty * 0.35 - bombFocus * 1.8, 0.35, 2.8) + Math.random() * 2.4;
-          s.bombs.push({ x: en.x, y: en.y + 12, vy: 40, rot: Math.random() * Math.PI * 2 });
+          // Timer still resets on schedule during the post-wave suppression
+          // window (so bombs don't all pile up and burst the moment it
+          // ends) — only the actual drop is held back.
+          if (s.elapsed >= s.bombsSuppressedUntil) {
+            s.bombs.push({ x: en.x, y: en.y + 12, vy: 40, rot: Math.random() * Math.PI * 2 });
+          }
         }
       }
       s.enemies = s.enemies.filter((en) => en.y < s.height + 40);
@@ -1528,7 +1588,7 @@ export default function FighterGame() {
             if (next <= 0) {
               statusRef.current = "gameover";
               setStatus("gameover");
-              riffPlayerRef.current?.stop();
+              musicPlayerRef.current?.stop();
               setBest((b) => {
                 const nb = Math.max(b, scoreRef.current);
                 try {
@@ -1565,7 +1625,7 @@ export default function FighterGame() {
       if (statusRef.current === "playing" && s.elapsed >= s.levelDuration) {
         statusRef.current = "levelcomplete";
         setStatus("levelcomplete");
-        riffPlayerRef.current?.stop();
+        musicPlayerRef.current?.stop();
         setBest((b) => {
           const nb = Math.max(b, scoreRef.current);
           try {
@@ -1589,6 +1649,14 @@ export default function FighterGame() {
     function render(c: CanvasRenderingContext2D, s: GameState, currentStatus: Status) {
       if (timerValueRef.current) {
         timerValueRef.current.textContent = formatTime(Math.max(0, s.levelDuration - s.elapsed));
+      }
+      if (midpointWarningRef.current) {
+        // Derived purely from elapsed/levelDuration (already synced to the
+        // ally via the normal snapshot) rather than a networked flag, so
+        // this reads identically on host, solo, and ally.
+        const halfway = s.levelDuration / 2;
+        const showWarning = currentStatus === "playing" && s.elapsed >= halfway - 3.5 && s.elapsed < halfway;
+        midpointWarningRef.current.style.opacity = showWarning ? "1" : "0";
       }
       const { width, height } = s;
       const sky = c.createLinearGradient(0, 0, 0, height);
@@ -1753,6 +1821,16 @@ export default function FighterGame() {
           >
             {musicMuted ? "🔇" : "🔊"}
           </button>
+        </div>
+      </div>
+
+      <div className="pointer-events-none absolute inset-x-0 top-16 sm:top-20 z-10 flex justify-center text-center font-sans">
+        <div
+          ref={midpointWarningRef}
+          className="rounded-full bg-red-700/80 px-4 py-1 text-xs sm:text-sm font-bold uppercase tracking-wide text-white shadow-lg backdrop-blur-sm"
+          style={{ opacity: 0, transition: "opacity 300ms ease-out" }}
+        >
+          ⚠ An Army of Enemy Planes is Approaching!
         </div>
       </div>
 
