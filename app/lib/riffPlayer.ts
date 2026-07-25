@@ -1,16 +1,24 @@
 // A procedurally synthesized "orchestra-rock" hybrid score — no audio file
 // or sample library needed, everything is generated in-browser with the Web
-// Audio API. Four layers make up the mix:
-//   - A distorted guitar riff (the "rock" backbone, chugging eighth notes).
+// Audio API.
+//
+// It's a real (short) song, not one bar on a loop: four 4-bar sections with
+// their own riff, chord, and drum feel (two verse sections, then two
+// heavier chorus sections with a thicker/more distorted guitar and a
+// double-kick pattern), each capped with a busier turnaround fill on its
+// last bar, before the whole 16-bar arrangement repeats. Four layers make up
+// the mix at any moment:
+//   - A distorted guitar riff (the "rock" backbone; each section has its
+//     own note pattern and rests, not just one repeating chord).
 //   - A slow-swelling string-section pad underneath (many detuned
 //     oscillators per note — the classic trick for turning a single
 //     synth voice into something that reads as an ensemble rather than one
-//     buzzy tone).
-//   - Short brass-like stabs accenting each chord change (the "orchestra
+//     buzzy tone), changing chord once per section.
+//   - Short brass-like stabs accenting each section change (the "orchestra
 //     hit" you'd hear in a trailer score).
-//   - A light drum layer (kick, snare, hi-hat) built from filtered noise
-//     bursts and a pitched sine thump, for a real rhythmic backbone instead
-//     of just the riff's own gating.
+//   - A drum layer (kick, snare, hi-hat) built from filtered noise bursts
+//     and a pitched sine thump, sparser in verses and four-on-the-floor in
+//     choruses.
 // A convolution reverb send glues all four together with a sense of room,
 // and a compressor on the master bus keeps the mix from clipping as layers
 // stack — both of which do more for "sounding less synthetic" than any
@@ -18,32 +26,57 @@
 // time (the standard Web Audio "lookahead scheduler" pattern) so timing
 // stays tight regardless of setInterval jitter.
 
-const TEMPO_BPM = 142;
+const TEMPO_BPM = 156;
 const BEAT_SECONDS = 60 / TEMPO_BPM;
 const STEP_SECONDS = BEAT_SECONDS / 2; // eighth notes
 const STEPS_PER_BAR = 8;
+const BARS_PER_SECTION = 4;
+const STEPS_PER_SECTION = STEPS_PER_BAR * BARS_PER_SECTION;
 const LOOKAHEAD_MS = 25;
 const SCHEDULE_AHEAD_SECONDS = 0.12;
 
-// Root note per eighth-note step, one bar of 8 — a simple E-power-chord riff
-// with a couple of walk-ups, repeated. Frequencies are low (guitar low-E
-// register) for weight.
+// Guitar-register note frequencies. `null` in a riff means a rest (a
+// palm-muted silence), which is what gives a riff its gallop/syncopation
+// instead of reading as a flat wall of eighth notes.
+const D2 = 73.42;
 const E2 = 82.41;
 const G2 = 98.0;
 const A2 = 110.0;
-const RIFF: number[] = [E2, E2, G2, E2, A2, E2, G2, E2];
+const B2 = 123.47;
 
-// A slower harmonic rhythm for the string pad and brass stabs underneath the
-// riff — a common "epic" progression (i minor - VI - III - VII), one chord
-// every 2 bars, voiced an octave above the guitar so the two layers don't
-// compete for the same register.
+const RIFF_VERSE_A: (number | null)[] = [E2, E2, null, E2, G2, E2, null, E2];
+const RIFF_VERSE_B: (number | null)[] = [E2, E2, G2, E2, A2, G2, E2, null];
+const RIFF_CHORUS_A: (number | null)[] = [E2, G2, E2, A2, B2, A2, G2, E2];
+const RIFF_CHORUS_B: (number | null)[] = [A2, A2, G2, E2, D2, E2, G2, A2];
+// A busier fill on the last bar of every section, cueing that something's
+// about to change instead of just cutting straight to the next section.
+const RIFF_TURNAROUND: (number | null)[] = [E2, G2, A2, B2, A2, G2, E2, D2];
+
+// String-pad chord roots, one per section, voiced an octave above the
+// guitar so the layers don't collide — the same i-VI-III-VII "epic"
+// progression as before, but now each chord gets its own riff and its own
+// drum intensity instead of the whole song being one bar on a loop.
 const E3 = 164.81;
 const C3 = 130.81;
 const G3 = 196.0;
 const D3 = 146.83;
-const PAD_PROGRESSION: number[] = [E3, C3, G3, D3];
-const BARS_PER_CHORD = 2;
-const STEPS_PER_CHORD = STEPS_PER_BAR * BARS_PER_CHORD;
+
+interface Section {
+  riff: (number | null)[];
+  pad: number;
+  // Chorus sections: thicker/more distorted guitar (extra sub-octave
+  // doubling) and a four-on-the-floor double-kick pattern instead of the
+  // verse's sparser backbeat.
+  heavy: boolean;
+}
+
+const SONG: Section[] = [
+  { riff: RIFF_VERSE_A, pad: E3, heavy: false },
+  { riff: RIFF_VERSE_B, pad: C3, heavy: false },
+  { riff: RIFF_CHORUS_A, pad: G3, heavy: true },
+  { riff: RIFF_CHORUS_B, pad: D3, heavy: true },
+];
+const STEPS_PER_SONG = STEPS_PER_SECTION * SONG.length;
 
 function makeDistortionCurve(amount: number): Float32Array<ArrayBuffer> {
   const samples = 44100;
@@ -139,18 +172,18 @@ export function createRiffPlayer(): RiffPlayer {
   // saw reads as "chiptune"; the triangle rounds off the edge) and a couple
   // of cents of per-oscillator detune, the same trick real amp-sim plugins
   // use to avoid a too-perfect digital lock.
-  function playGuitarChord(time: number, freq: number, accent: boolean) {
+  function playGuitarChord(time: number, freq: number, accent: boolean, heavy: boolean) {
     if (!ctx || !master || !reverbSend) return;
     const dist = ctx.createWaveShaper();
-    dist.curve = makeDistortionCurve(24);
+    dist.curve = makeDistortionCurve(heavy ? 34 : 24);
     dist.oversample = "4x";
 
     const filter = ctx.createBiquadFilter();
     filter.type = "lowpass";
-    filter.frequency.value = 2200;
+    filter.frequency.value = heavy ? 2600 : 2200;
 
     const env = ctx.createGain();
-    const peak = accent ? 0.78 : 0.56;
+    const peak = (accent ? 0.78 : 0.56) * (heavy ? 1.2 : 1);
     env.gain.setValueAtTime(0, time);
     env.gain.linearRampToValueAtTime(peak, time + 0.006);
     env.gain.exponentialRampToValueAtTime(0.08, time + 0.11);
@@ -167,6 +200,9 @@ export function createRiffPlayer(): RiffPlayer {
       { ratio: 1, type: "triangle", detune: 0 },
       { ratio: 1.5, type: "sawtooth", detune: 0 },
       { ratio: 2, type: "sawtooth", detune: 4 },
+      // Chorus sections double an octave down for extra low-end weight —
+      // the difference between a rhythm riff and a "wall of sound" riff.
+      ...(heavy ? [{ ratio: 0.5, type: "sawtooth" as OscillatorType, detune: 0 }] : []),
     ];
     for (const v of voices) {
       const osc = ctx.createOscillator();
@@ -302,19 +338,34 @@ export function createRiffPlayer(): RiffPlayer {
   function scheduler() {
     if (!ctx) return;
     while (nextStepTime < ctx.currentTime + SCHEDULE_AHEAD_SECONDS) {
-      const barStep = stepIndex % STEPS_PER_BAR;
-      const accent = barStep === 0;
+      const posInSong = stepIndex % STEPS_PER_SONG;
+      const sectionIndex = Math.floor(posInSong / STEPS_PER_SECTION);
+      const section = SONG[sectionIndex];
+      const posInSection = posInSong % STEPS_PER_SECTION;
+      const barInSection = Math.floor(posInSection / STEPS_PER_BAR);
+      const barStep = posInSection % STEPS_PER_BAR;
+      const isLastBarOfSection = barInSection === BARS_PER_SECTION - 1;
+      const pattern = isLastBarOfSection ? RIFF_TURNAROUND : section.riff;
+      const note = pattern[barStep];
+      const accent = barStep === 0 || barStep === 4;
 
-      playGuitarChord(nextStepTime, RIFF[barStep], accent);
-      if (barStep === 0 || barStep === 4) playKick(nextStepTime);
-      if (barStep === 2 || barStep === 6) playSnare(nextStepTime);
-      playHihat(nextStepTime, barStep === 6);
+      if (note !== null) playGuitarChord(nextStepTime, note, accent, section.heavy);
 
-      if (stepIndex % STEPS_PER_CHORD === 0) {
-        const chordIndex = Math.floor(stepIndex / STEPS_PER_CHORD) % PAD_PROGRESSION.length;
-        const rootFreq = PAD_PROGRESSION[chordIndex];
-        playPad(nextStepTime, rootFreq, STEPS_PER_CHORD * STEP_SECONDS);
-        playBrassStab(nextStepTime, rootFreq);
+      if (section.heavy) {
+        // Four-on-the-floor double kick, driving chorus energy.
+        if (barStep % 2 === 0) playKick(nextStepTime);
+        if (barStep === 2 || barStep === 6) playSnare(nextStepTime);
+        playHihat(nextStepTime, barStep % 4 === 3);
+      } else {
+        if (barStep === 0 || barStep === 4) playKick(nextStepTime);
+        if (barStep === 2 || barStep === 6) playSnare(nextStepTime);
+        playHihat(nextStepTime, barStep === 6);
+      }
+
+      // Pad swell and brass stab once per section, on the downbeat.
+      if (posInSection === 0) {
+        playPad(nextStepTime, section.pad, STEPS_PER_SECTION * STEP_SECONDS);
+        playBrassStab(nextStepTime, section.pad);
       }
 
       stepIndex++;

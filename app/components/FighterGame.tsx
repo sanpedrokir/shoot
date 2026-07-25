@@ -571,35 +571,52 @@ function drawShield(ctx: CanvasRenderingContext2D, shine: number) {
 function drawBullet(ctx: CanvasRenderingContext2D) {
   ctx.save();
 
-  const glow = ctx.createRadialGradient(0, -2, 1, 0, -2, 11);
-  glow.addColorStop(0, "rgba(255,205,100,0.55)");
+  // Long tapering exhaust trail behind the bolt (it travels toward -y, so
+  // the trail extends toward +y) — reads as high-velocity ordnance rather
+  // than a plinking spark.
+  const trail = ctx.createLinearGradient(0, 6, 0, 22);
+  trail.addColorStop(0, "rgba(255,180,80,0.55)");
+  trail.addColorStop(1, "rgba(255,120,30,0)");
+  ctx.fillStyle = trail;
+  ctx.beginPath();
+  ctx.moveTo(-2.4, 6);
+  ctx.lineTo(2.4, 6);
+  ctx.lineTo(0, 22);
+  ctx.closePath();
+  ctx.fill();
+
+  const glow = ctx.createRadialGradient(0, -3, 1, 0, -3, 16);
+  glow.addColorStop(0, "rgba(255,205,100,0.6)");
   glow.addColorStop(1, "rgba(255,140,40,0)");
   ctx.fillStyle = glow;
   ctx.beginPath();
-  ctx.ellipse(0, -2, 7, 13, 0, 0, Math.PI * 2);
+  ctx.ellipse(0, -3, 10, 18, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  const grad = ctx.createLinearGradient(0, -11, 0, 7);
+  const grad = ctx.createLinearGradient(0, -16, 0, 9);
   grad.addColorStop(0, "rgba(255,255,255,1)");
-  grad.addColorStop(0.35, "rgba(255,222,130,1)");
-  grad.addColorStop(0.75, "rgba(255,130,35,0.95)");
-  grad.addColorStop(1, "rgba(255,80,20,0.15)");
+  grad.addColorStop(0.3, "rgba(255,222,130,1)");
+  grad.addColorStop(0.7, "rgba(255,120,30,0.95)");
+  grad.addColorStop(1, "rgba(255,70,15,0.2)");
   ctx.beginPath();
-  ctx.moveTo(0, -11);
-  ctx.lineTo(2.6, -4);
-  ctx.lineTo(2.2, 4);
-  ctx.lineTo(0, 7);
-  ctx.lineTo(-2.2, 4);
-  ctx.lineTo(-2.6, -4);
+  ctx.moveTo(0, -16);
+  ctx.lineTo(4, -6);
+  ctx.lineTo(3.4, 6);
+  ctx.lineTo(0, 9);
+  ctx.lineTo(-3.4, 6);
+  ctx.lineTo(-4, -6);
   ctx.closePath();
   ctx.fillStyle = grad;
   ctx.fill();
+  ctx.strokeStyle = "rgba(180,70,10,0.5)";
+  ctx.lineWidth = 0.6;
+  ctx.stroke();
 
-  ctx.strokeStyle = "rgba(255,255,255,0.9)";
-  ctx.lineWidth = 1;
+  ctx.strokeStyle = "rgba(255,255,255,0.95)";
+  ctx.lineWidth = 1.4;
   ctx.beginPath();
-  ctx.moveTo(0, -9);
-  ctx.lineTo(0, 5);
+  ctx.moveTo(0, -13);
+  ctx.lineTo(0, 6);
   ctx.stroke();
 
   ctx.restore();
@@ -1298,14 +1315,14 @@ export default function FighterGame() {
       s.spawnTimer -= dt;
       if (s.spawnTimer <= 0) {
         s.spawnTimer = clamp(1.6 - difficulty * 0.5 - swarmFocus * 0.3, 0.45, 1.6) + Math.random() * 0.3;
-        // One extra enemy per teammate so co-op stays a real challenge, plus
-        // a little more on top during the peak of a squadron-swarm phase.
+        // Every burst is at least a pair so the wedge formation always reads
+        // as a squadron arriving together — plus one extra enemy per
+        // teammate, plus a little more on top during the peak of a
+        // squadron-swarm phase.
         const extraSwarm = Math.min(1, Math.floor(swarmFocus * 2.2));
-        const count = s.players.length + extraSwarm;
-        // A single enemy just spawns solo; two or more arrive as a wedge
-        // formation burst instead of scattered random positions.
+        const count = Math.max(2, s.players.length) + extraSwarm;
         const spacing = 34;
-        const offsets = count > 1 ? wedgeFormation(count, spacing, 22) : [{ dx: 0, dy: 0 }];
+        const offsets = wedgeFormation(count, spacing, 22);
         const maxAbsDx = Math.max(...offsets.map((o) => Math.abs(o.dx)));
         const margin = 30 + maxAbsDx;
         const anchorX = margin + Math.random() * Math.max(1, s.width - margin * 2);
