@@ -337,7 +337,7 @@ const PATH_WIDTH = 340;
 const PATH_NODE_SPACING = 168;
 const PATH_NODE_R = 30;
 const PATH_TOP_PAD = 90;
-const PATH_BOTTOM_PAD = 90;
+const PATH_BOTTOM_PAD = 110;
 
 // Smooth, non-mechanical left-right swing driven by a sine wave rather than
 // a strict alternating zigzag — clamped well inside the container so the
@@ -2654,6 +2654,11 @@ export default function FighterGame() {
   const roadmapPathD = catmullRomPath(
     Array.from({ length: roadmapCount }, (_, k) => roadmapNodeCenter(k))
   );
+  const roadmapPaletteAt = (k: number) => LOCATION_PALETTES[roadmapIndices[k] % LOCATION_PALETTES.length];
+  // Whether location #1 — and so the very start of the endless route — is
+  // currently in the visible (windowed) portion of the roadmap.
+  const roadmapShowsStart = roadmapIndices[0] === 1;
+
   // Auto-scroll the roadmap so the relevant node is in view the moment the
   // screen opens, instead of dropping the player at the very bottom (the
   // start of an endless route) every time. Defaults to the frontier, but
@@ -2779,6 +2784,28 @@ export default function FighterGame() {
               }}
             />
             <div className="relative mx-auto" style={{ width: PATH_WIDTH, height: roadmapHeight }}>
+              {/* Each location tints the backdrop near its own node with its
+                  own palette, so the scenery's mood shifts as you scroll
+                  through the route instead of staying one flat color. */}
+              {roadmapIndices.map((idx, k) => {
+                const { x, y } = roadmapNodeCenter(k);
+                const palette = LOCATION_PALETTES[idx % LOCATION_PALETTES.length];
+                return (
+                  <div
+                    key={`halo-${idx}`}
+                    className="pointer-events-none absolute"
+                    style={{
+                      left: x,
+                      top: y,
+                      width: 440,
+                      height: 440,
+                      transform: "translate(-50%, -50%)",
+                      background: `radial-gradient(circle, rgba(${palette.nebulaTint},0.24), rgba(${palette.nebulaTint},0.06) 55%, transparent 75%)`,
+                    }}
+                  />
+                );
+              })}
+
               {roadmapStars.map((s, i) => (
                 <span
                   key={i}
@@ -2787,12 +2814,41 @@ export default function FighterGame() {
                 />
               ))}
 
+              {roadmapShowsStart && (
+                <div
+                  className="absolute text-center text-[9px] font-bold uppercase tracking-[0.2em] text-white/40"
+                  style={{ left: roadmapNodeCenter(0).x, top: roadmapHeight - 30, transform: "translateX(-50%)" }}
+                >
+                  Start
+                </div>
+              )}
+              <div
+                className="absolute w-full text-center text-[10px] italic text-white/35"
+                style={{ top: 18 }}
+              >
+                the journey continues…
+              </div>
+
               <svg width={PATH_WIDTH} height={roadmapHeight} className="absolute inset-0">
-                <path d={roadmapPathD} fill="none" stroke="rgba(140,170,255,0.18)" strokeWidth={10} strokeLinecap="round" />
+                <defs>
+                  <linearGradient
+                    id="roadmapPathGrad"
+                    gradientUnits="userSpaceOnUse"
+                    x1={PATH_WIDTH / 2}
+                    y1={0}
+                    x2={PATH_WIDTH / 2}
+                    y2={roadmapHeight}
+                  >
+                    <stop offset="0%" stopColor={roadmapPaletteAt(roadmapCount - 1).planetEdge} />
+                    <stop offset="50%" stopColor={roadmapPaletteAt(Math.floor(roadmapCount / 2)).planetEdge} />
+                    <stop offset="100%" stopColor={roadmapPaletteAt(0).planetEdge} />
+                  </linearGradient>
+                </defs>
+                <path d={roadmapPathD} fill="none" stroke="url(#roadmapPathGrad)" strokeOpacity={0.35} strokeWidth={10} strokeLinecap="round" />
                 <path
                   d={roadmapPathD}
                   fill="none"
-                  stroke="rgba(255,255,255,0.4)"
+                  stroke="rgba(255,255,255,0.45)"
                   strokeWidth={2.5}
                   strokeLinecap="round"
                   strokeDasharray="1 11"
@@ -3018,7 +3074,7 @@ export default function FighterGame() {
             </div>
           )}
 
-          {best > 0 && <p className="text-xs text-white/60">Best score: {best}</p>}
+          {best > 0 && <p className="text-xs text-white/60">Your Best Score: {best}</p>}
 
           <AuthPanel
             onUserChange={handleUserChange}
