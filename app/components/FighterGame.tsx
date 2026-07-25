@@ -13,7 +13,7 @@ import {
   type NetSnapshot,
 } from "../lib/coop";
 import { createMusicPlayer, type MusicPlayer } from "../lib/musicPlayer";
-import AuthPanel, { type AuthUser } from "./AuthPanel";
+import AuthPanel, { type AuthUser, type LeaderboardTop } from "./AuthPanel";
 
 type Bullet = { x: number; y: number; vy: number; ownerId: string };
 type Missile = { x: number; y: number; vy: number; vx: number };
@@ -28,6 +28,11 @@ type Enemy = {
   scale: number;
   fireTimer: number;
   bombTimer: number;
+  // Present only for the finale cluster: loops the plane continuously
+  // around a fixed point instead of falling, so it never leaves the screen
+  // on its own — it's there until the player shoots it down or time runs
+  // out, not until it happens to drift off the bottom.
+  orbit?: { cx: number; cy: number; radius: number; angle: number; speed: number };
 };
 type Particle = {
   x: number;
@@ -783,6 +788,7 @@ export default function FighterGame() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const userRef = useRef<AuthUser | null>(null);
   const [refreshLeaderboardKey, setRefreshLeaderboardKey] = useState(0);
+  const [globalTop, setGlobalTop] = useState<LeaderboardTop | null>(null);
 
   const [musicMuted, setMusicMuted] = useState(false);
 
@@ -1404,37 +1410,57 @@ export default function FighterGame() {
         s.bombsSuppressedUntil = s.elapsed + 10;
       }
 
-      // Finale: with 20 seconds left on the clock, every remaining enemy
-      // this level lines up together in a single slow-drifting row instead
-      // of the usual falling bursts — a clean last shooting-gallery moment
-      // before time runs out, rather than a continued random gauntlet.
+      // Finale: with 15 seconds left on the clock, a dense cluster of
+      // enemies arrives and each one loops continuously around its own spot
+      // in the formation instead of falling through and off the screen —
+      // they stay put (and keep shooting) until the player clears them or
+      // time runs out, rather than draining away and leaving nothing to
+      // shoot at for the last few seconds.
       const timeLeft = s.levelDuration - s.elapsed;
-      if (!s.finalWaveSpawned && timeLeft <= 20) {
+      if (!s.finalWaveSpawned && timeLeft <= 15) {
         s.finalWaveSpawned = true;
-        const cols = 7;
-        const spacingX = 46;
-        const offsets = gridFormation(1, cols, spacingX, 0);
+        const rows = 3;
+        const cols = 5;
+        const spacingX = 48;
+        const spacingY = 44;
+        const offsets = gridFormation(rows, cols, spacingX, spacingY);
         const maxAbsDx = Math.max(...offsets.map((o) => Math.abs(o.dx)));
         const margin = 30 + maxAbsDx;
         const anchorX = clamp(s.width / 2, margin, Math.max(margin, s.width - margin));
+        const anchorY = s.height * 0.32;
         for (const offset of offsets) {
+          const cx = clamp(anchorX + offset.dx, 30, s.width - 30);
+          const cy = anchorY + offset.dy;
           s.enemies.push({
-            x: clamp(anchorX + offset.dx, 30, s.width - 30),
-            y: -30 + offset.dy,
-            vy: 16 + Math.random() * 10,
+            x: cx,
+            y: cy,
+            vy: 0,
             phase: Math.random() * Math.PI * 2,
-            amp: 10 + Math.random() * 15,
+            amp: 0,
             scale: 0.85 + Math.random() * 0.35,
             fireTimer: 1.8 + Math.random() * 1.8,
             bombTimer: 1.2 + Math.random() * 2.2,
+            orbit: {
+              cx,
+              cy,
+              radius: 12 + Math.random() * 10,
+              angle: Math.random() * Math.PI * 2,
+              speed: (Math.random() < 0.5 ? -1 : 1) * (1.1 + Math.random() * 0.9),
+            },
           });
         }
       }
 
       for (const en of s.enemies) {
-        en.y += en.vy * dt;
-        en.phase += dt * 1.6;
-        en.x = clamp(en.x + Math.sin(en.phase) * en.amp * dt * 0.6, 20, s.width - 20);
+        if (en.orbit) {
+          en.orbit.angle += en.orbit.speed * dt;
+          en.x = clamp(en.orbit.cx + Math.cos(en.orbit.angle) * en.orbit.radius, 20, s.width - 20);
+          en.y = en.orbit.cy + Math.sin(en.orbit.angle) * en.orbit.radius;
+        } else {
+          en.y += en.vy * dt;
+          en.phase += dt * 1.6;
+          en.x = clamp(en.x + Math.sin(en.phase) * en.amp * dt * 0.6, 20, s.width - 20);
+        }
         en.fireTimer -= dt;
         if (en.fireTimer <= 0 && en.y > 10 && en.y < s.height - 60 && s.players.length > 0) {
           en.fireTimer = clamp(2.2 - difficulty * 0.3, 0.6, 2.2) + Math.random() * 1.6;
@@ -1956,7 +1982,11 @@ export default function FighterGame() {
 
           {best > 0 && <p className="text-xs text-white/60">Best score: {best}</p>}
 
-          <AuthPanel onUserChange={handleUserChange} refreshLeaderboardKey={refreshLeaderboardKey} />
+          <AuthPanel
+            onUserChange={handleUserChange}
+            refreshLeaderboardKey={refreshLeaderboardKey}
+            onTopChange={setGlobalTop}
+          />
 
           {(lobbyMode === "solo" || (lobbyMode === "host" && connStatus === "connected")) && (
             <button
@@ -1972,9 +2002,19 @@ export default function FighterGame() {
 
       {status === "levelcomplete" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/65 px-6 text-center text-white font-sans">
-          <h2 className="text-3xl font-extrabold">Time&apos;s Up!</h2>
+          <h2 className="text-3xl font-extrabold">You Survived!</h2>
           <p className="text-lg">
-            Score: <span className="font-bold">{score}</span>
+            Your Score: <span className="font-bold">{score.toLocaleString()}</span>
+          </p>
+          <p className="text-sm text-white/70">
+            Global High Score:{" "}
+            {globalTop ? (
+              <span className="font-semibold text-white">
+                {globalTop.nickname} {globalTop.highScore.toLocaleString()}
+              </span>
+            ) : (
+              <span className="font-semibold text-white">No scores yet</span>
+            )}
           </p>
           {netRole !== "solo" && (
             <p className="text-sm text-white/70">
@@ -2007,7 +2047,17 @@ export default function FighterGame() {
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/65 px-6 text-center text-white font-sans">
           <h2 className="text-3xl font-extrabold">{isAlly && hostLeft ? "Host Disconnected" : "Plane Shot Down!"}</h2>
           <p className="text-lg">
-            Score: <span className="font-bold">{score}</span>
+            Your Score: <span className="font-bold">{score.toLocaleString()}</span>
+          </p>
+          <p className="text-sm text-white/70">
+            Global High Score:{" "}
+            {globalTop ? (
+              <span className="font-semibold text-white">
+                {globalTop.nickname} {globalTop.highScore.toLocaleString()}
+              </span>
+            ) : (
+              <span className="font-semibold text-white">No scores yet</span>
+            )}
           </p>
           {netRole !== "solo" && (
             <p className="text-sm text-white/70">
@@ -2015,7 +2065,7 @@ export default function FighterGame() {
               <span className="font-semibold text-white">{scores[1] ?? 0}</span>
             </p>
           )}
-          <p className="text-sm text-white/70">Your Best Score: {best}</p>
+          <p className="text-sm text-white/70">Your Best Score: {best.toLocaleString()}</p>
           {isAlly ? (
             <p className="text-sm text-white/70">Waiting for host…</p>
           ) : (

@@ -8,7 +8,7 @@ export interface AuthUser {
   maxLevel: number;
 }
 
-interface LeaderboardTop {
+export interface LeaderboardTop {
   nickname: string;
   highScore: number;
 }
@@ -16,6 +16,7 @@ interface LeaderboardTop {
 interface AuthPanelProps {
   onUserChange: (user: AuthUser | null) => void;
   refreshLeaderboardKey: number;
+  onTopChange?: (top: LeaderboardTop | null) => void;
 }
 
 function readLocalProgress(): { highScore: number; maxLevel: number } {
@@ -40,7 +41,7 @@ function storeLocalProgress(highScore: number, maxLevel: number) {
 
 type Mode = "login" | "register";
 
-export default function AuthPanel({ onUserChange, refreshLeaderboardKey }: AuthPanelProps) {
+export default function AuthPanel({ onUserChange, refreshLeaderboardKey, onTopChange }: AuthPanelProps) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [checkedSession, setCheckedSession] = useState(false);
   const [mode, setMode] = useState<Mode>("login");
@@ -67,9 +68,15 @@ export default function AuthPanel({ onUserChange, refreshLeaderboardKey }: AuthP
   useEffect(() => {
     fetch("/api/leaderboard", { cache: "no-store" })
       .then((r) => r.json())
-      .then((data: { top: LeaderboardTop | null }) => setTop(data.top))
+      .then((data: { top: LeaderboardTop | null }) => {
+        setTop(data.top);
+        onTopChange?.(data.top);
+      })
       .catch(() => {})
       .finally(() => setLeaderboardChecked(true));
+    // onTopChange is a fresh closure each render; only re-fetch when the
+    // parent explicitly bumps refreshLeaderboardKey.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshLeaderboardKey]);
 
   const submit = async () => {
