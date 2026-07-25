@@ -19,6 +19,8 @@ type Bullet = { x: number; y: number; vy: number; ownerId: string };
 type Missile = { x: number; y: number; vy: number; vx: number };
 type Bomb = { x: number; y: number; vy: number; rot: number };
 type Shield = { x: number; y: number; vy: number; phase: number };
+type RapidFire = { x: number; y: number; vy: number; phase: number };
+type SmartBomb = { x: number; y: number; vy: number; phase: number };
 type Enemy = {
   x: number;
   y: number;
@@ -58,11 +60,14 @@ type Player = {
   targetY: number;
   invuln: number;
   fireTimer: number;
+  // Elapsed-time threshold (host-simulation-only, not networked — see the
+  // note by RAPIDFIRE_DURATION) until which this plane fires faster.
+  rapidFireUntil: number;
 };
 
 type Status = "ready" | "playing" | "levelcomplete" | "gameover" | "quit";
 type NetRole = "solo" | "host" | "ally";
-type LobbyMode = "solo" | "host" | "join";
+type LobbyMode = "solo" | "host" | "join" | "daily";
 type ConnStatus = "idle" | "connecting" | "connected" | "error";
 
 interface GameState {
@@ -76,11 +81,15 @@ interface GameState {
   bombs: Bomb[];
   enemies: Enemy[];
   shields: Shield[];
+  rapidFires: RapidFire[];
+  smartBombs: SmartBomb[];
   particles: Particle[];
   stars: Star[];
   nebulae: Nebula[];
   spawnTimer: number;
   shieldTimer: number;
+  rapidFireTimer: number;
+  smartBombTimer: number;
   elapsed: number;
   pointerDown: boolean;
   keys: Set<string>;
@@ -116,6 +125,14 @@ const INVULN_TIME = 2.2;
 const SHIELD_VALUE = 20;
 const SHIELD_PER_LIFE = 40;
 
+const RAPIDFIRE_HIT_RADIUS = 18;
+// Normal fire interval is 0.18s; rapid fire roughly triples the rate for a
+// limited window rather than being a permanent upgrade.
+const RAPIDFIRE_INTERVAL = 0.06;
+const RAPIDFIRE_DURATION = 8;
+
+const SMARTBOMB_HIT_RADIUS = 18;
+
 // A restored life also grants a brief "Healthy" invulnerability window, and
 // that window grows the more total shields a run has collected — so staying
 // shield-focused pays off with a longer safety margin each time you heal, not
@@ -127,6 +144,10 @@ const GRAVITY = 130;
 // Solo and co-op games play different background tracks.
 const SOLO_MUSIC_TRACK = "/audio/theme.mp3";
 const COOP_MUSIC_TRACK = "/audio/theme-coop.mp3";
+// Everyone gets the same starting difficulty for the daily challenge — a
+// bit more bite than the level-1 default, since it's meant to be a real
+// challenge to compete over, not just another normal run.
+const DAILY_CHALLENGE_LEVEL = 5;
 // Pusher hard-caps client events at 10/sec per connection; staying well
 // under that avoids events getting silently dropped (which reads as
 // mounting lag that eventually "hangs" once updates stop arriving).
@@ -212,7 +233,7 @@ function makePlayers(width: number, height: number, playerIds: string[]): Player
   return playerIds.map((id, i) => {
     const x = width / 2 + (i - (n - 1) / 2) * 56;
     const y = height - height * 0.16;
-    return { id, x, y, targetX: x, targetY: y, invuln: 2, fireTimer: 0 };
+    return { id, x, y, targetX: x, targetY: y, invuln: 2, fireTimer: 0, rapidFireUntil: 0 };
   });
 }
 
@@ -251,11 +272,15 @@ function makeInitialState(width: number, height: number, level: number, playerId
     bombs: [],
     enemies: [],
     shields: [],
+    rapidFires: [],
+    smartBombs: [],
     particles: [],
     stars,
     nebulae,
     spawnTimer: 0.6,
     shieldTimer: 2 + Math.random() * 2,
+    rapidFireTimer: 12 + Math.random() * 6,
+    smartBombTimer: 22 + Math.random() * 10,
     elapsed: 0,
     pointerDown: false,
     keys: new Set(),
@@ -678,6 +703,103 @@ function drawShield(ctx: CanvasRenderingContext2D, shine: number) {
   ctx.restore();
 }
 
+function drawRapidFire(ctx: CanvasRenderingContext2D, shine: number) {
+  ctx.save();
+
+  const glow = ctx.createRadialGradient(0, 0, 2, 0, 0, 15);
+  glow.addColorStop(0, "rgba(255,210,60,0.55)");
+  glow.addColorStop(1, "rgba(255,210,60,0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(0, 0, 15, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(0, 0, 10, 0, Math.PI * 2);
+  const bodyGrad = ctx.createLinearGradient(0, -10, 0, 10);
+  bodyGrad.addColorStop(0, "#fff3b0");
+  bodyGrad.addColorStop(0.45, "#ffb833");
+  bodyGrad.addColorStop(1, "#c9660a");
+  ctx.fillStyle = bodyGrad;
+  ctx.fill();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "#7a3a02";
+  ctx.stroke();
+
+  // lightning-bolt emblem
+  ctx.beginPath();
+  ctx.moveTo(1.5, -7);
+  ctx.lineTo(-4, 0.5);
+  ctx.lineTo(-0.5, 0.5);
+  ctx.lineTo(-1.5, 7);
+  ctx.lineTo(4.5, -1);
+  ctx.lineTo(1, -1);
+  ctx.closePath();
+  ctx.fillStyle = "rgba(255,255,255,0.95)";
+  ctx.fill();
+  ctx.strokeStyle = "rgba(122,58,2,0.5)";
+  ctx.lineWidth = 0.5;
+  ctx.stroke();
+
+  ctx.globalAlpha = 0.5 + shine * 0.3;
+  ctx.beginPath();
+  ctx.ellipse(-3 + shine * 4, -6, 2, 0.9, -0.5, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawSmartBomb(ctx: CanvasRenderingContext2D, shine: number) {
+  ctx.save();
+
+  const glow = ctx.createRadialGradient(0, 0, 2, 0, 0, 17);
+  glow.addColorStop(0, "rgba(255,80,60,0.55)");
+  glow.addColorStop(1, "rgba(255,80,60,0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(0, 0, 17, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(0, 0, 10, 0, Math.PI * 2);
+  const bodyGrad = ctx.createLinearGradient(0, -10, 0, 10);
+  bodyGrad.addColorStop(0, "#ffc9b0");
+  bodyGrad.addColorStop(0.45, "#ff5a3c");
+  bodyGrad.addColorStop(1, "#8a0f0f");
+  ctx.fillStyle = bodyGrad;
+  ctx.fill();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "#5c0a0a";
+  ctx.stroke();
+
+  // radiating burst spikes — a "clear the screen" symbol
+  ctx.fillStyle = "rgba(255,255,255,0.95)";
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2;
+    ctx.save();
+    ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.moveTo(0, -2.4);
+    ctx.lineTo(1.6, -8.5);
+    ctx.lineTo(0, -6.4);
+    ctx.lineTo(-1.6, -8.5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+  ctx.beginPath();
+  ctx.arc(0, 0, 2.6, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255,255,255,0.95)";
+  ctx.fill();
+
+  ctx.globalAlpha = 0.4 + shine * 0.3;
+  ctx.beginPath();
+  ctx.ellipse(-3 + shine * 4, -6, 2, 0.9, -0.5, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255,255,255,0.8)";
+  ctx.fill();
+  ctx.restore();
+}
+
 // A chunky glowing energy bolt rather than a thin spark — reads as a much
 // heavier weapon while staying the same size for collision purposes (the
 // hitbox is still driven by the target's radius, not the bullet's).
@@ -813,6 +935,7 @@ export default function FighterGame() {
   const localIdRef = useRef<string>("");
   const netRoleRef = useRef<NetRole>("solo");
   const playerIdsRef = useRef<string[]>([]);
+  const isDailyRef = useRef(false);
   const channelRef = useRef<PresenceChannel | null>(null);
   const pendingInputsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const broadcastAccumRef = useRef(0);
@@ -873,6 +996,28 @@ export default function FighterGame() {
   const userRef = useRef<AuthUser | null>(null);
   const [refreshLeaderboardKey, setRefreshLeaderboardKey] = useState(0);
   const [globalTop, setGlobalTop] = useState<LeaderboardTop | null>(null);
+  const [refreshDailyKey, setRefreshDailyKey] = useState(0);
+  const [dailyTop, setDailyTop] = useState<{ nickname: string; score: number }[]>([]);
+  const [dailyTopChecked, setDailyTopChecked] = useState(false);
+
+  // Only fetches while the daily tab is actually open (no point polling it
+  // in the background), and again whenever a score just got submitted.
+  useEffect(() => {
+    if (lobbyMode !== "daily") return;
+    let cancelled = false;
+    fetch("/api/daily-leaderboard", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data: { top: { nickname: string; score: number }[] }) => {
+        if (!cancelled) setDailyTop(data.top);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setDailyTopChecked(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [lobbyMode, refreshDailyKey]);
   // True while the sign-up/log-in form has unsubmitted nickname/password
   // text sitting in it — Start is held off until the player either finishes
   // that (so their score doesn't silently end up on a guest session) or
@@ -940,7 +1085,7 @@ export default function FighterGame() {
     setLobbyMode(mode);
   };
 
-  const beginGame = (role: NetRole, playerIds: string[]) => {
+  const beginGame = (role: NetRole, playerIds: string[], level: number = 1) => {
     netRoleRef.current = role;
     setNetRole(role);
     playerIdsRef.current = playerIds;
@@ -948,7 +1093,7 @@ export default function FighterGame() {
     const el = containerRef.current;
     const width = el?.clientWidth ?? 360;
     const height = el?.clientHeight ?? 640;
-    stateRef.current = makeInitialState(width, height, 1, playerIds);
+    stateRef.current = makeInitialState(width, height, level, playerIds);
     localPosRef.current = null;
     const spawnedLocal = stateRef.current.players.find((p) => p.id === localIdRef.current);
     if (spawnedLocal) {
@@ -974,7 +1119,13 @@ export default function FighterGame() {
   };
 
   const startSolo = () => {
+    isDailyRef.current = false;
     beginGame("solo", [localIdRef.current]);
+  };
+
+  const startDaily = () => {
+    isDailyRef.current = true;
+    beginGame("solo", [localIdRef.current], DAILY_CHALLENGE_LEVEL);
   };
 
   const hostRoom = () => {
@@ -1052,11 +1203,13 @@ export default function FighterGame() {
   const handleStart = () => {
     if (authPending) return;
     if (lobbyMode === "solo") startSolo();
+    else if (lobbyMode === "daily") startDaily();
     else if (lobbyMode === "host") hostStartOrRestart();
   };
 
   const handlePlayAgain = () => {
     if (netRole === "host") hostStartOrRestart();
+    else if (isDailyRef.current) startDaily();
     else startSolo();
   };
 
@@ -1139,8 +1292,9 @@ export default function FighterGame() {
         pl.targetX = p.x;
         pl.targetY = p.y;
       }
-      if (statusRef.current === "ready" && lobbyModeRef.current === "solo" && !authPendingRef.current) {
-        startSolo();
+      if (statusRef.current === "ready" && !authPendingRef.current) {
+        if (lobbyModeRef.current === "solo") startSolo();
+        else if (lobbyModeRef.current === "daily") startDaily();
       }
       e.preventDefault();
     };
@@ -1178,8 +1332,9 @@ export default function FighterGame() {
       if (keys.includes(e.key)) {
         e.preventDefault();
         stateRef.current?.keys.add(e.key.toLowerCase());
-        if (statusRef.current === "ready" && lobbyModeRef.current === "solo" && !authPendingRef.current) {
-          startSolo();
+        if (statusRef.current === "ready" && !authPendingRef.current) {
+          if (lobbyModeRef.current === "solo") startSolo();
+          else if (lobbyModeRef.current === "daily") startDaily();
         }
       }
     };
@@ -1331,6 +1486,12 @@ export default function FighterGame() {
       for (const sh of s.shields) {
         sh.y += sh.vy * dt;
       }
+      for (const rf of s.rapidFires) {
+        rf.y += rf.vy * dt;
+      }
+      for (const sb of s.smartBombs) {
+        sb.y += sb.vy * dt;
+      }
     }
 
     function applySnapshot(s: GameState, snap: NetSnapshot | null) {
@@ -1352,6 +1513,10 @@ export default function FighterGame() {
           targetY,
           invuln: np.invuln,
           fireTimer: 0,
+          // Host-simulation-only detail (drives bullet-spawn timing there,
+          // already reflected in the bullets the ally receives) — never
+          // networked, so this default is never actually read on the ally.
+          rapidFireUntil: 0,
         };
       });
       s.enemies = snap.enemies.map((ne) => ({
@@ -1382,6 +1547,8 @@ export default function FighterGame() {
       s.bombs = snap.bombs.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: nb.vy, rot: nb.rot }));
       s.bullets = snap.bullets.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: nb.vy, ownerId: "" }));
       s.shields = snap.shields.map((ns) => ({ x: ns.x * scaleX, y: ns.y * scaleY, vy: ns.vy, phase: 0 }));
+      s.rapidFires = snap.rapidFires.map((nr) => ({ x: nr.x * scaleX, y: nr.y * scaleY, vy: nr.vy, phase: 0 }));
+      s.smartBombs = snap.smartBombs.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: nb.vy, phase: 0 }));
 
       const newScores = snap.players.map((np) => np.score);
       scoresRef.current = newScores;
@@ -1448,6 +1615,12 @@ export default function FighterGame() {
         shields: s.shields
           .slice(0, MAX_SNAPSHOT_ENTITIES)
           .map((sh) => ({ x: round1(sh.x), y: round1(sh.y), vy: round1(sh.vy) })),
+        rapidFires: s.rapidFires
+          .slice(0, MAX_SNAPSHOT_ENTITIES)
+          .map((rf) => ({ x: round1(rf.x), y: round1(rf.y), vy: round1(rf.vy) })),
+        smartBombs: s.smartBombs
+          .slice(0, MAX_SNAPSHOT_ENTITIES)
+          .map((sb) => ({ x: round1(sb.x), y: round1(sb.y), vy: round1(sb.vy) })),
       };
     }
 
@@ -1483,11 +1656,12 @@ export default function FighterGame() {
         }
       }
 
-      // auto-fire, one volley per player
+      // auto-fire, one volley per player — faster while a Rapid Fire buff
+      // is active.
       for (const pl of s.players) {
         pl.fireTimer -= dt;
         if (pl.fireTimer <= 0) {
-          pl.fireTimer = 0.18;
+          pl.fireTimer = s.elapsed < pl.rapidFireUntil ? RAPIDFIRE_INTERVAL : 0.18;
           s.bullets.push({ x: pl.x - 7, y: pl.y - 14, vy: -560, ownerId: pl.id });
           s.bullets.push({ x: pl.x + 7, y: pl.y - 14, vy: -560, ownerId: pl.id });
         }
@@ -1688,6 +1862,43 @@ export default function FighterGame() {
       }
       s.shields = s.shields.filter((sh) => sh.y < s.height + 30);
 
+      // Rapid Fire and Smart Bomb: rarer than shields (fixed intervals, not
+      // scaled by difficulty), since they're stronger, more situational
+      // pickups rather than a steady recovery drip.
+      s.rapidFireTimer -= dt;
+      if (s.rapidFireTimer <= 0) {
+        s.rapidFireTimer = 14 + Math.random() * 8;
+        s.rapidFires.push({
+          x: 24 + Math.random() * (s.width - 48),
+          y: -20,
+          vy: 55 + Math.random() * 20,
+          phase: Math.random() * Math.PI * 2,
+        });
+      }
+      for (const rf of s.rapidFires) {
+        rf.y += rf.vy * dt;
+        rf.phase += dt * 2.2;
+        rf.x = clamp(rf.x + Math.sin(rf.phase) * 16 * dt, 12, s.width - 12);
+      }
+      s.rapidFires = s.rapidFires.filter((rf) => rf.y < s.height + 30);
+
+      s.smartBombTimer -= dt;
+      if (s.smartBombTimer <= 0) {
+        s.smartBombTimer = 26 + Math.random() * 12;
+        s.smartBombs.push({
+          x: 24 + Math.random() * (s.width - 48),
+          y: -20,
+          vy: 50 + Math.random() * 18,
+          phase: Math.random() * Math.PI * 2,
+        });
+      }
+      for (const sb of s.smartBombs) {
+        sb.y += sb.vy * dt;
+        sb.phase += dt * 2.2;
+        sb.x = clamp(sb.x + Math.sin(sb.phase) * 16 * dt, 12, s.width - 12);
+      }
+      s.smartBombs = s.smartBombs.filter((sb) => sb.y < s.height + 30);
+
       for (const m of s.missiles) {
         let nearest = s.players[0];
         if (nearest) {
@@ -1777,6 +1988,44 @@ export default function FighterGame() {
         }
       }
 
+      // rapid fire pickups — a personal buff for whichever plane grabs it,
+      // not a shared team resource like shields.
+      for (const pl of s.players) {
+        for (const rf of s.rapidFires) {
+          const r = PLAYER_HIT_RADIUS + RAPIDFIRE_HIT_RADIUS;
+          if (dist2(pl.x, pl.y, rf.x, rf.y) < r * r) {
+            pl.rapidFireUntil = Math.max(pl.rapidFireUntil, s.elapsed) + RAPIDFIRE_DURATION;
+            spawnExplosion(s.particles, rf.x, rf.y, ["#fff3b0", "#ffb833", "#c9660a"], 10);
+            s.rapidFires = s.rapidFires.filter((r2) => r2 !== rf);
+            break;
+          }
+        }
+      }
+
+      // smart bomb pickups — instantly clears every enemy currently on
+      // screen, credited to whoever grabbed it like a bullet kill would be.
+      for (const pl of s.players) {
+        for (const sb of s.smartBombs) {
+          const r = PLAYER_HIT_RADIUS + SMARTBOMB_HIT_RADIUS;
+          if (dist2(pl.x, pl.y, sb.x, sb.y) < r * r) {
+            spawnExplosion(s.particles, sb.x, sb.y, ["#ffc9b0", "#ff5a3c", "#8a0f0f"], 14);
+            const idx = s.players.findIndex((p) => p.id === pl.id);
+            if (s.enemies.length > 0) {
+              for (const en of s.enemies) {
+                spawnExplosion(s.particles, en.x, en.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"]);
+                if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 10;
+              }
+              s.enemies = [];
+              setScores([...scoresRef.current]);
+              scoreRef.current = scoresRef.current.reduce((sum, v) => sum + (v ?? 0), 0);
+              setScore(scoreRef.current);
+            }
+            s.smartBombs = s.smartBombs.filter((s2) => s2 !== sb);
+            break;
+          }
+        }
+      }
+
       // player collisions — shared lives pool across the whole team
       for (const pl of s.players) {
         if (pl.invuln > 0) continue;
@@ -1833,9 +2082,17 @@ export default function FighterGame() {
                   fetch("/api/score", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ score: nb, level: 1 }),
+                    body: JSON.stringify({ score: nb, level: s.level }),
                   }).catch(() => {});
                   setRefreshLeaderboardKey((k) => k + 1);
+                  if (isDailyRef.current) {
+                    fetch("/api/daily-score", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ score: scoreRef.current }),
+                    }).catch(() => {});
+                    setRefreshDailyKey((k) => k + 1);
+                  }
                 }
                 return nb;
               });
@@ -1870,9 +2127,17 @@ export default function FighterGame() {
             fetch("/api/score", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ score: nb, level: 1 }),
+              body: JSON.stringify({ score: nb, level: s.level }),
             }).catch(() => {});
             setRefreshLeaderboardKey((k) => k + 1);
+            if (isDailyRef.current) {
+              fetch("/api/daily-score", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ score: scoreRef.current }),
+              }).catch(() => {});
+              setRefreshDailyKey((k) => k + 1);
+            }
           }
           return nb;
         });
@@ -1933,6 +2198,22 @@ export default function FighterGame() {
         c.save();
         c.translate(sh.x, sh.y);
         drawShield(c, Math.sin(sh.phase));
+        c.restore();
+      }
+
+      // rapid fire pickups
+      for (const rf of s.rapidFires) {
+        c.save();
+        c.translate(rf.x, rf.y);
+        drawRapidFire(c, Math.sin(rf.phase));
+        c.restore();
+      }
+
+      // smart bomb pickups
+      for (const sb of s.smartBombs) {
+        c.save();
+        c.translate(sb.x, sb.y);
+        drawSmartBomb(c, Math.sin(sb.phase));
         c.restore();
       }
 
@@ -2081,8 +2362,8 @@ export default function FighterGame() {
             shoot down every plane you can.
           </p>
 
-          <div className="flex gap-2 rounded-full bg-white/10 p-1 text-sm">
-            {(["solo", "host", "join"] as LobbyMode[]).map((m) => (
+          <div className="flex flex-wrap justify-center gap-2 rounded-full bg-white/10 p-1 text-sm">
+            {(["solo", "daily", "host", "join"] as LobbyMode[]).map((m) => (
               <button
                 key={m}
                 onClick={() => selectLobbyMode(m)}
@@ -2090,10 +2371,44 @@ export default function FighterGame() {
                   lobbyMode === m ? "bg-blue-600" : "text-white/70"
                 }`}
               >
-                {m === "solo" ? "Single Player" : m === "host" ? "Get Ally" : "Join Ally"}
+                {m === "solo"
+                  ? "Single Player"
+                  : m === "daily"
+                    ? "Daily Challenge"
+                    : m === "host"
+                      ? "Get Ally"
+                      : "Join Ally"}
               </button>
             ))}
           </div>
+
+          {lobbyMode === "daily" && (
+            <div className="flex w-64 flex-col items-center gap-1.5 rounded-xl bg-white/10 px-4 py-3">
+              <p className="text-xs text-white/70">
+                Same starting difficulty for everyone, resets daily. Log in above to put your score on today&apos;s
+                board.
+              </p>
+              {dailyTopChecked && (
+                <div className="w-full text-left text-xs text-white/80">
+                  <div className="mb-1 font-bold uppercase tracking-wide text-white/50">Today&apos;s Top</div>
+                  {dailyTop.length === 0 ? (
+                    <p className="text-white/50">No scores yet today — be the first!</p>
+                  ) : (
+                    <ol className="flex flex-col gap-0.5">
+                      {dailyTop.slice(0, 5).map((row, i) => (
+                        <li key={i} className="flex justify-between">
+                          <span>
+                            {i + 1}. {row.nickname}
+                          </span>
+                          <span className="font-semibold text-white">{row.score.toLocaleString()}</span>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {lobbyMode === "host" && (
             <div className="flex flex-col items-center gap-1.5 rounded-xl bg-white/10 px-4 py-3">
@@ -2166,7 +2481,7 @@ export default function FighterGame() {
             onPendingAuthChange={setAuthPending}
           />
 
-          {(lobbyMode === "solo" || (lobbyMode === "host" && connStatus === "connected")) && (
+          {(lobbyMode === "solo" || lobbyMode === "daily" || (lobbyMode === "host" && connStatus === "connected")) && (
             <button
               onClick={handleStart}
               disabled={authPending}
@@ -2175,7 +2490,9 @@ export default function FighterGame() {
               Start
             </button>
           )}
-          {lobbyMode === "solo" && <p className="text-xs text-white/50">Arrow keys / WASD also work on desktop</p>}
+          {(lobbyMode === "solo" || lobbyMode === "daily") && (
+            <p className="text-xs text-white/50">Arrow keys / WASD also work on desktop</p>
+          )}
         </div>
       )}
 

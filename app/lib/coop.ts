@@ -95,4 +95,6 @@ export interface NetSnapshot {
   bombs: { x: number; y: number; vy: number; rot: number }[];
   bullets: { x: number; y: number; vy: number }[];
   shields: { x: number; y: number; vy: number }[];
+  rapidFires: { x: number; y: number; vy: number }[];
+  smartBombs: { x: number; y: number; vy: number }[];
 }
