@@ -80,11 +80,11 @@ export interface NetSnapshot {
   elapsed: number;
   score: number;
   lives: number;
-  cashTotal: number;
+  shieldTotal: number;
   players: NetPlayer[];
   enemies: { x: number; y: number; vy: number; scale: number; phase: number; amp: number }[];
   missiles: { x: number; y: number; vx: number; vy: number }[];
   bombs: { x: number; y: number; vy: number; rot: number }[];
   bullets: { x: number; y: number; vy: number }[];
-  cash: { x: number; y: number; vy: number }[];
+  shields: { x: number; y: number; vy: number }[];
 }

@@ -12,12 +12,13 @@ import {
   type StartMessage,
   type NetSnapshot,
 } from "../lib/coop";
+import { createRiffPlayer, type RiffPlayer } from "../lib/riffPlayer";
 import AuthPanel, { type AuthUser } from "./AuthPanel";
 
 type Bullet = { x: number; y: number; vy: number; ownerId: string };
 type Missile = { x: number; y: number; vy: number; vx: number };
 type Bomb = { x: number; y: number; vy: number; rot: number };
-type Cash = { x: number; y: number; vy: number; phase: number };
+type Shield = { x: number; y: number; vy: number; phase: number };
 type Enemy = {
   x: number;
   y: number;
@@ -38,7 +39,7 @@ type Particle = {
   size: number;
   color: string;
 };
-type Cloud = { x: number; y: number; r: number; speed: number; opacity: number };
+type Star = { x: number; y: number; r: number; speed: number; opacity: number; twinklePhase: number };
 
 type Player = {
   id: string;
@@ -65,11 +66,11 @@ interface GameState {
   missiles: Missile[];
   bombs: Bomb[];
   enemies: Enemy[];
-  cash: Cash[];
+  shields: Shield[];
   particles: Particle[];
-  clouds: Cloud[];
+  stars: Star[];
   spawnTimer: number;
-  cashTimer: number;
+  shieldTimer: number;
   elapsed: number;
   pointerDown: boolean;
   keys: Set<string>;
@@ -82,23 +83,23 @@ const PLAYER_HIT_RADIUS = 7;
 const ENEMY_HIT_RADIUS = 10;
 const MISSILE_HIT_RADIUS = 3.5;
 const BOMB_HIT_RADIUS = 4.5;
-// Wider than a hazard hit-radius on purpose — cash is a reward, not a
+// Wider than a hazard hit-radius on purpose — a shield is a reward, not a
 // threat, so near-misses while dodging should still count as a grab instead
 // of demanding pixel-precise flying on top of everything else going on.
-const CASH_HIT_RADIUS = 18;
+const SHIELD_HIT_RADIUS = 18;
 const INVULN_TIME = 2.2;
-// Each cash pickup is worth a fixed amount; once the running total crosses
-// another multiple of CASH_PER_LIFE, one life is restored (capped at
+// Each shield pickup is worth a fixed amount; once the running total crosses
+// another multiple of SHIELD_PER_LIFE, one life is restored (capped at
 // maxLives), so recovery is a steady drip rather than an instant refill.
-const CASH_VALUE = 20;
-const CASH_PER_LIFE = 40;
+const SHIELD_VALUE = 20;
+const SHIELD_PER_LIFE = 40;
 
 // A restored life also grants a brief "Healthy" invulnerability window, and
-// that window grows the more total cash a run has collected — so staying
-// cash-focused pays off with a longer safety margin each time you heal, not
+// that window grows the more total shields a run has collected — so staying
+// shield-focused pays off with a longer safety margin each time you heal, not
 // just an occasional extra life.
-function healInvulnDuration(cashTotal: number) {
-  return clamp(2 + cashTotal * 0.004, 2.5, 6);
+function healInvulnDuration(shieldTotal: number) {
+  return clamp(2 + shieldTotal * 0.004, 2.5, 6);
 }
 const GRAVITY = 130;
 // Pusher hard-caps client events at 10/sec per connection; staying well
@@ -126,11 +127,11 @@ function timeDifficultyMultiplier(elapsed: number) {
   return 1 + Math.floor(elapsed / 60) * 0.005;
 }
 
-// Cash drops get more frequent the longer a run goes, mirroring the
+// Shield drops get more frequent the longer a run goes, mirroring the
 // difficulty ramp so recovery keeps pace with the growing pressure — same
 // flat-per-minute stepping, just shrinking the spawn interval instead of
 // growing a difficulty score.
-function cashRateMultiplier(elapsed: number) {
+function shieldRateMultiplier(elapsed: number) {
   return 1 + Math.floor(elapsed / 60) * 0.3;
 }
 
@@ -152,6 +153,19 @@ function levelSurviveDuration(level: number) {
   return clamp(240 + (level - 1) * 4, 240, 360);
 }
 
+// A symmetric wedge of relative {dx, dy} offsets for a burst of n enemies,
+// wide and trailing at the edges, nose-first in the middle — reads as a
+// squadron arriving in formation rather than a scatter of random spawns.
+// Enemies still fall independently straight down after spawning; only the
+// initial burst shape is formation-like.
+function wedgeFormation(n: number, spacing: number, dropStep: number): { dx: number; dy: number }[] {
+  const half = (n - 1) / 2;
+  return Array.from({ length: n }, (_, i) => {
+    const k = i - half;
+    return { dx: k * spacing, dy: -Math.abs(k) * dropStep };
+  });
+}
+
 function makePlayers(width: number, height: number, playerIds: string[]): Player[] {
   const n = playerIds.length;
   return playerIds.map((id, i) => {
@@ -162,12 +176,13 @@ function makePlayers(width: number, height: number, playerIds: string[]): Player
 }
 
 function makeInitialState(width: number, height: number, level: number, playerIds: string[]): GameState {
-  const clouds: Cloud[] = Array.from({ length: 6 }, () => ({
+  const stars: Star[] = Array.from({ length: 70 }, () => ({
     x: Math.random() * width,
     y: Math.random() * height,
-    r: 22 + Math.random() * 34,
-    speed: 12 + Math.random() * 18,
-    opacity: 0.35 + Math.random() * 0.3,
+    r: 0.6 + Math.random() * 1.6,
+    speed: 20 + Math.random() * 60,
+    opacity: 0.3 + Math.random() * 0.7,
+    twinklePhase: Math.random() * Math.PI * 2,
   }));
   return {
     width,
@@ -179,11 +194,11 @@ function makeInitialState(width: number, height: number, level: number, playerId
     missiles: [],
     bombs: [],
     enemies: [],
-    cash: [],
+    shields: [],
     particles: [],
-    clouds,
+    stars,
     spawnTimer: 0.6,
-    cashTimer: 2 + Math.random() * 2,
+    shieldTimer: 2 + Math.random() * 2,
     elapsed: 0,
     pointerDown: false,
     keys: new Set(),
@@ -250,28 +265,21 @@ function dist2(ax: number, ay: number, bx: number, by: number) {
   return dx * dx + dy * dy;
 }
 
-// Each puff is its own radial gradient (soft, feathered edge) rather than a
-// flat-filled circle, so clouds read as hazy and wispy instead of cartoonish.
-function drawCloud(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, opacity: number) {
-  const puffs = [
-    { dx: -r * 0.9, dy: r * 0.15, pr: r * 0.6 },
-    { dx: -r * 0.25, dy: -r * 0.2, pr: r * 0.75 },
-    { dx: r * 0.4, dy: -r * 0.1, pr: r * 0.68 },
-    { dx: r * 0.95, dy: r * 0.2, pr: r * 0.52 },
-    { dx: 0, dy: r * 0.28, pr: r * 0.8 },
-  ];
-  for (const puff of puffs) {
-    const px = x + puff.dx;
-    const py = y + puff.dy;
-    const grad = ctx.createRadialGradient(px, py, 0, px, py, puff.pr);
-    grad.addColorStop(0, `rgba(255,255,255,${opacity})`);
-    grad.addColorStop(0.55, `rgba(250,252,255,${opacity * 0.65})`);
-    grad.addColorStop(1, "rgba(255,255,255,0)");
-    ctx.fillStyle = grad;
-    ctx.beginPath();
-    ctx.arc(px, py, puff.pr, 0, Math.PI * 2);
-    ctx.fill();
-  }
+// A tight core plus a soft glow halo, so stars read as small points of light
+// rather than flat dots, and brighter ones feel like they're glowing.
+function drawStar(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, opacity: number) {
+  const glow = ctx.createRadialGradient(x, y, 0, x, y, r * 4);
+  glow.addColorStop(0, `rgba(210,230,255,${opacity * 0.5})`);
+  glow.addColorStop(1, "rgba(210,230,255,0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(x, y, r * 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = `rgba(255,255,255,${opacity})`;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 function spawnExplosion(particles: Particle[], x: number, y: number, colorSet: string[], count = 18) {
@@ -497,54 +505,104 @@ function drawBomb(ctx: CanvasRenderingContext2D) {
   ctx.restore();
 }
 
-function drawCash(ctx: CanvasRenderingContext2D, shine: number) {
+function drawShield(ctx: CanvasRenderingContext2D, shine: number) {
   ctx.save();
-  const grad = ctx.createLinearGradient(0, -9, 0, 9);
-  grad.addColorStop(0, "#fff3b0");
-  grad.addColorStop(0.5, "#ffd23f");
-  grad.addColorStop(1, "#c98a1f");
+
+  // soft energy glow behind the shield
+  const glow = ctx.createRadialGradient(0, 0, 2, 0, 0, 15);
+  glow.addColorStop(0, "rgba(90,210,255,0.55)");
+  glow.addColorStop(1, "rgba(90,210,255,0)");
+  ctx.fillStyle = glow;
   ctx.beginPath();
-  ctx.arc(0, 0, 9, 0, Math.PI * 2);
-  ctx.fillStyle = grad;
+  ctx.arc(0, 0, 15, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = "#8a5c14";
+
+  // heater-shield silhouette: rounded top tapering to a point
+  const shieldPath = () => {
+    ctx.beginPath();
+    ctx.moveTo(-8, -7);
+    ctx.bezierCurveTo(-8, -11, 8, -11, 8, -7);
+    ctx.lineTo(8, 2);
+    ctx.quadraticCurveTo(8, 6, 0, 11);
+    ctx.quadraticCurveTo(-8, 6, -8, 2);
+    ctx.closePath();
+  };
+
+  shieldPath();
+  const bodyGrad = ctx.createLinearGradient(0, -11, 0, 11);
+  bodyGrad.addColorStop(0, "#c8f4ff");
+  bodyGrad.addColorStop(0.45, "#4fc3f7");
+  bodyGrad.addColorStop(1, "#0d6fa8");
+  ctx.fillStyle = bodyGrad;
+  ctx.fill();
   ctx.lineWidth = 1;
+  ctx.strokeStyle = "#0a3d5c";
   ctx.stroke();
 
+  // inner rim for a layered, plated look
   ctx.beginPath();
-  ctx.arc(0, 0, 6.4, 0, Math.PI * 2);
+  ctx.moveTo(-5, -6);
+  ctx.bezierCurveTo(-5, -8.5, 5, -8.5, 5, -6);
+  ctx.lineTo(5, 1);
+  ctx.quadraticCurveTo(5, 4, 0, 7.5);
+  ctx.quadraticCurveTo(-5, 4, -5, 1);
+  ctx.closePath();
   ctx.strokeStyle = "rgba(255,255,255,0.55)";
-  ctx.lineWidth = 0.6;
+  ctx.lineWidth = 0.7;
   ctx.stroke();
 
-  ctx.fillStyle = "#8a5c14";
-  ctx.font = "bold 11px sans-serif";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillText("$", 0, 0.5);
+  // heal/restore cross emblem
+  ctx.fillStyle = "rgba(255,255,255,0.92)";
+  ctx.fillRect(-1.1, -4.2, 2.2, 8.4);
+  ctx.fillRect(-4.2, -1.1, 8.4, 2.2);
 
-  // soft rotating glint so it reads as shiny while falling
+  // soft rotating glint so it reads as energized while falling
   ctx.globalAlpha = 0.5 + shine * 0.3;
   ctx.beginPath();
-  ctx.ellipse(-3 + shine * 4, -3, 2.2, 1, -0.5, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(255,255,255,0.8)";
+  ctx.ellipse(-3 + shine * 4, -6, 2, 0.9, -0.5, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
   ctx.fill();
   ctx.restore();
 }
 
+// A chunky glowing energy bolt rather than a thin spark — reads as a much
+// heavier weapon while staying the same size for collision purposes (the
+// hitbox is still driven by the target's radius, not the bullet's).
 function drawBullet(ctx: CanvasRenderingContext2D) {
-  const grad = ctx.createLinearGradient(0, -7, 0, 5);
-  grad.addColorStop(0, "rgba(255,255,255,0.95)");
-  grad.addColorStop(0.5, "rgba(255,241,150,0.95)");
-  grad.addColorStop(1, "rgba(255,190,60,0.15)");
+  ctx.save();
+
+  const glow = ctx.createRadialGradient(0, -2, 1, 0, -2, 11);
+  glow.addColorStop(0, "rgba(255,205,100,0.55)");
+  glow.addColorStop(1, "rgba(255,140,40,0)");
+  ctx.fillStyle = glow;
   ctx.beginPath();
-  ctx.moveTo(0, -7);
-  ctx.quadraticCurveTo(1.6, -2, 1.1, 5);
-  ctx.quadraticCurveTo(0, 6, -1.1, 5);
-  ctx.quadraticCurveTo(-1.6, -2, 0, -7);
+  ctx.ellipse(0, -2, 7, 13, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  const grad = ctx.createLinearGradient(0, -11, 0, 7);
+  grad.addColorStop(0, "rgba(255,255,255,1)");
+  grad.addColorStop(0.35, "rgba(255,222,130,1)");
+  grad.addColorStop(0.75, "rgba(255,130,35,0.95)");
+  grad.addColorStop(1, "rgba(255,80,20,0.15)");
+  ctx.beginPath();
+  ctx.moveTo(0, -11);
+  ctx.lineTo(2.6, -4);
+  ctx.lineTo(2.2, 4);
+  ctx.lineTo(0, 7);
+  ctx.lineTo(-2.2, 4);
+  ctx.lineTo(-2.6, -4);
   ctx.closePath();
   ctx.fillStyle = grad;
   ctx.fill();
+
+  ctx.strokeStyle = "rgba(255,255,255,0.9)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(0, -9);
+  ctx.lineTo(0, 5);
+  ctx.stroke();
+
+  ctx.restore();
 }
 
 const PLAYER_SCHEME = {
@@ -582,15 +640,18 @@ const ALLY_SCHEME_AMBER = {
 
 const PLAYER_SCHEMES = [PLAYER_SCHEME, ALLY_SCHEME_GREEN, ALLY_SCHEME_AMBER];
 
+// Brightened up from the original daytime-sky palette — against the new dark
+// space background, the old near-black hull and roundel center would blend
+// straight into the sky and become hard to spot.
 const ENEMY_SCHEME = {
-  bodyTop: "#5c5f66",
-  bodyBottom: "#26282c",
-  stroke: "#111214",
+  bodyTop: "#8a8fa0",
+  bodyBottom: "#3a3e48",
+  stroke: "#c23b3b",
   canopyTop: "#ffb199",
-  canopyBottom: "#4a0d0d",
-  roundelOuter: "#b7141f",
-  roundelInner: "#161616",
-  accent: "#e0e0e0",
+  canopyBottom: "#6a1a1a",
+  roundelOuter: "#e0202f",
+  roundelInner: "#f0f0f0",
+  accent: "#e8e8e8",
 };
 
 function readStoredBest(): number {
@@ -611,6 +672,7 @@ export default function FighterGame() {
   const lastTimeRef = useRef<number>(0);
   const timerValueRef = useRef<HTMLDivElement | null>(null);
   const lobbyModeRef = useRef<LobbyMode>("solo");
+  const riffPlayerRef = useRef<RiffPlayer | null>(null);
 
   const localIdRef = useRef<string>("");
   const netRoleRef = useRef<NetRole>("solo");
@@ -637,15 +699,15 @@ export default function FighterGame() {
   const scoresRef = useRef<number[]>([0]);
   const [lives, setLives] = useState(3);
   const [maxLives, setMaxLives] = useState(3);
-  const [cashTotal, setCashTotal] = useState(0);
+  const [shieldTotal, setShieldTotal] = useState(0);
   const [hostLeft, setHostLeft] = useState(false);
 
   // Kept in refs so the game-loop closure (created once) can read the
-  // latest score/lives/cash when building a host broadcast snapshot.
+  // latest score/lives/shields when building a host broadcast snapshot.
   const scoreRef = useRef(score);
   const livesRef = useRef(lives);
   const maxLivesRef = useRef(maxLives);
-  const cashTotalRef = useRef(cashTotal);
+  const shieldTotalRef = useRef(shieldTotal);
   useEffect(() => {
     scoreRef.current = score;
   }, [score]);
@@ -656,8 +718,8 @@ export default function FighterGame() {
     maxLivesRef.current = maxLives;
   }, [maxLives]);
   useEffect(() => {
-    cashTotalRef.current = cashTotal;
-  }, [cashTotal]);
+    shieldTotalRef.current = shieldTotal;
+  }, [shieldTotal]);
   // Seeded with an SSR-safe default (matching the server-rendered markup) and
   // synced from localStorage in a mount effect below, to avoid a hydration
   // mismatch for returning players whose real best score differs from this.
@@ -675,9 +737,23 @@ export default function FighterGame() {
   const userRef = useRef<AuthUser | null>(null);
   const [refreshLeaderboardKey, setRefreshLeaderboardKey] = useState(0);
 
+  const [musicMuted, setMusicMuted] = useState(false);
+
   useEffect(() => {
     localIdRef.current = getClientId();
   }, []);
+
+  useEffect(() => {
+    riffPlayerRef.current = createRiffPlayer();
+    return () => {
+      riffPlayerRef.current?.dispose();
+      riffPlayerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    riffPlayerRef.current?.setMuted(musicMuted);
+  }, [musicMuted]);
 
   useEffect(() => {
     // Reads localStorage after hydration (not in the initial state) so the
@@ -741,13 +817,14 @@ export default function FighterGame() {
     maxLivesRef.current = total;
     setLives(total);
     livesRef.current = total;
-    setCashTotal(0);
-    cashTotalRef.current = 0;
+    setShieldTotal(0);
+    shieldTotalRef.current = 0;
     // Set synchronously (not just via the status-syncing effect) so the
     // game-loop closure never reads a stale ref for the one tick between
     // this call and the next React commit.
     statusRef.current = "playing";
     setStatus("playing");
+    riffPlayerRef.current?.start();
   };
 
   const startSolo = () => {
@@ -755,6 +832,7 @@ export default function FighterGame() {
   };
 
   const hostRoom = () => {
+    riffPlayerRef.current?.unlock();
     const code = generateRoomCode();
     setRoomCode(code);
     setConnStatus("connecting");
@@ -790,6 +868,7 @@ export default function FighterGame() {
   };
 
   const joinRoom = (code: string) => {
+    riffPlayerRef.current?.unlock();
     if (!/^\d{3}$/.test(code)) {
       setConnStatus("error");
       setConnError("Enter the 3-digit code your host shared.");
@@ -819,6 +898,7 @@ export default function FighterGame() {
         setHostLeft(true);
         statusRef.current = "gameover";
         setStatus("gameover");
+        riffPlayerRef.current?.stop();
       }
     });
   };
@@ -839,12 +919,14 @@ export default function FighterGame() {
     setNetRole("solo");
     netRoleRef.current = "solo";
     setStatus("ready");
+    riffPlayerRef.current?.stop();
   };
 
   const handleQuit = () => {
     resetLobby();
     statusRef.current = "quit";
     setStatus("quit");
+    riffPlayerRef.current?.stop();
   };
 
   const handleUserChange = (u: AuthUser | null) => {
@@ -1069,8 +1151,8 @@ export default function FighterGame() {
       for (const b of s.bullets) {
         b.y += b.vy * dt;
       }
-      for (const csh of s.cash) {
-        csh.y += csh.vy * dt;
+      for (const sh of s.shields) {
+        sh.y += sh.vy * dt;
       }
     }
 
@@ -1113,7 +1195,7 @@ export default function FighterGame() {
       }));
       s.bombs = snap.bombs.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: nb.vy, rot: nb.rot }));
       s.bullets = snap.bullets.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: nb.vy, ownerId: "" }));
-      s.cash = snap.cash.map((nc) => ({ x: nc.x * scaleX, y: nc.y * scaleY, vy: nc.vy, phase: 0 }));
+      s.shields = snap.shields.map((ns) => ({ x: ns.x * scaleX, y: ns.y * scaleY, vy: ns.vy, phase: 0 }));
 
       const newScores = snap.players.map((np) => np.score);
       scoresRef.current = newScores;
@@ -1122,10 +1204,12 @@ export default function FighterGame() {
       );
       setScore((prev) => (prev !== snap.score ? snap.score : prev));
       setLives((prev) => (prev !== snap.lives ? snap.lives : prev));
-      setCashTotal((prev) => (prev !== snap.cashTotal ? snap.cashTotal : prev));
+      setShieldTotal((prev) => (prev !== snap.shieldTotal ? snap.shieldTotal : prev));
       if (snap.status !== statusRef.current) {
         statusRef.current = snap.status;
         setStatus(snap.status);
+        if (snap.status === "playing") riffPlayerRef.current?.start();
+        else riffPlayerRef.current?.stop();
       }
     }
 
@@ -1139,7 +1223,7 @@ export default function FighterGame() {
         elapsed: round1(s.elapsed),
         score: scoreRef.current,
         lives: livesRef.current,
-        cashTotal: cashTotalRef.current,
+        shieldTotal: shieldTotalRef.current,
         players: s.players.map((pl, i) => ({
           id: pl.id,
           x: round1(pl.x),
@@ -1166,9 +1250,9 @@ export default function FighterGame() {
         bullets: s.bullets
           .slice(0, MAX_SNAPSHOT_ENTITIES)
           .map((b) => ({ x: round1(b.x), y: round1(b.y), vy: round1(b.vy) })),
-        cash: s.cash
+        shields: s.shields
           .slice(0, MAX_SNAPSHOT_ENTITIES)
-          .map((csh) => ({ x: round1(csh.x), y: round1(csh.y), vy: round1(csh.vy) })),
+          .map((sh) => ({ x: round1(sh.x), y: round1(sh.y), vy: round1(sh.vy) })),
       };
     }
 
@@ -1184,12 +1268,13 @@ export default function FighterGame() {
         if (pl.invuln > 0) pl.invuln -= dt;
       }
 
-      // clouds
-      for (const c of s.clouds) {
-        c.y += c.speed * dt;
-        if (c.y - c.r > s.height) {
-          c.y = -c.r;
-          c.x = Math.random() * s.width;
+      // stars
+      for (const st of s.stars) {
+        st.y += st.speed * dt;
+        st.twinklePhase += dt * 3;
+        if (st.y - st.r > s.height) {
+          st.y = -st.r;
+          st.x = Math.random() * s.width;
         }
       }
 
@@ -1216,10 +1301,18 @@ export default function FighterGame() {
         // One extra enemy per teammate so co-op stays a real challenge, plus
         // a little more on top during the peak of a squadron-swarm phase.
         const extraSwarm = Math.min(1, Math.floor(swarmFocus * 2.2));
-        for (let i = 0; i < s.players.length + extraSwarm; i++) {
+        const count = s.players.length + extraSwarm;
+        // A single enemy just spawns solo; two or more arrive as a wedge
+        // formation burst instead of scattered random positions.
+        const spacing = 34;
+        const offsets = count > 1 ? wedgeFormation(count, spacing, 22) : [{ dx: 0, dy: 0 }];
+        const maxAbsDx = Math.max(...offsets.map((o) => Math.abs(o.dx)));
+        const margin = 30 + maxAbsDx;
+        const anchorX = margin + Math.random() * Math.max(1, s.width - margin * 2);
+        for (let i = 0; i < offsets.length; i++) {
           s.enemies.push({
-            x: 30 + Math.random() * (s.width - 60),
-            y: -30 - i * 40,
+            x: clamp(anchorX + offsets[i].dx, 30, s.width - 30),
+            y: -30 + offsets[i].dy,
             vy: 55 + Math.random() * 35 + Math.min(difficulty, 8) * 40,
             phase: Math.random() * Math.PI * 2,
             amp: 20 + Math.random() * 40,
@@ -1264,26 +1357,26 @@ export default function FighterGame() {
       }
       s.enemies = s.enemies.filter((en) => en.y < s.height + 40);
 
-      // Cash drops on its own timer, independent of the enemy/bomb difficulty
+      // Shield drops on its own timer, independent of the enemy/bomb difficulty
       // ramp — it's a recovery mechanic, not a hazard, so it never gets
       // scarcer as the run gets harder. It does get more frequent the longer
       // the run goes, so recovery keeps pace with the growing pressure.
-      s.cashTimer -= dt;
-      if (s.cashTimer <= 0) {
-        s.cashTimer = (2 + Math.random() * 2.5) / cashRateMultiplier(s.elapsed);
-        s.cash.push({
+      s.shieldTimer -= dt;
+      if (s.shieldTimer <= 0) {
+        s.shieldTimer = (2 + Math.random() * 2.5) / shieldRateMultiplier(s.elapsed);
+        s.shields.push({
           x: 24 + Math.random() * (s.width - 48),
           y: -20,
           vy: 55 + Math.random() * 20,
           phase: Math.random() * Math.PI * 2,
         });
       }
-      for (const csh of s.cash) {
-        csh.y += csh.vy * dt;
-        csh.phase += dt * 2.2;
-        csh.x = clamp(csh.x + Math.sin(csh.phase) * 16 * dt, 12, s.width - 12);
+      for (const sh of s.shields) {
+        sh.y += sh.vy * dt;
+        sh.phase += dt * 2.2;
+        sh.x = clamp(sh.x + Math.sin(sh.phase) * 16 * dt, 12, s.width - 12);
       }
-      s.cash = s.cash.filter((csh) => csh.y < s.height + 30);
+      s.shields = s.shields.filter((sh) => sh.y < s.height + 30);
 
       for (const m of s.missiles) {
         let nearest = s.players[0];
@@ -1342,29 +1435,29 @@ export default function FighterGame() {
         setScore(scoreRef.current);
       }
 
-      // cash pickups — any plane flying through one collects it into the
-      // shared team total; every full CASH_PER_LIFE collected restores one
+      // shield pickups — any plane flying through one collects it into the
+      // shared team total; every full SHIELD_PER_LIFE collected restores one
       // life back into the shared pool (never past maxLives).
-      const collectedCash = new Set<Cash>();
-      for (const csh of s.cash) {
+      const collectedShields = new Set<Shield>();
+      for (const sh of s.shields) {
         for (const pl of s.players) {
-          const r = PLAYER_HIT_RADIUS + CASH_HIT_RADIUS;
-          if (dist2(pl.x, pl.y, csh.x, csh.y) < r * r) {
-            collectedCash.add(csh);
+          const r = PLAYER_HIT_RADIUS + SHIELD_HIT_RADIUS;
+          if (dist2(pl.x, pl.y, sh.x, sh.y) < r * r) {
+            collectedShields.add(sh);
             break;
           }
         }
       }
-      if (collectedCash.size) {
-        s.cash = s.cash.filter((csh) => !collectedCash.has(csh));
-        for (const csh of collectedCash) {
-          spawnExplosion(s.particles, csh.x, csh.y, ["#ffd75e", "#fff3c0", "#c98a1f"], 10);
+      if (collectedShields.size) {
+        s.shields = s.shields.filter((sh) => !collectedShields.has(sh));
+        for (const sh of collectedShields) {
+          spawnExplosion(s.particles, sh.x, sh.y, ["#ffd75e", "#fff3c0", "#c98a1f"], 10);
         }
-        const prevTotal = cashTotalRef.current;
-        const newTotal = prevTotal + collectedCash.size * CASH_VALUE;
-        cashTotalRef.current = newTotal;
-        setCashTotal(newTotal);
-        const livesToRestore = Math.floor(newTotal / CASH_PER_LIFE) - Math.floor(prevTotal / CASH_PER_LIFE);
+        const prevTotal = shieldTotalRef.current;
+        const newTotal = prevTotal + collectedShields.size * SHIELD_VALUE;
+        shieldTotalRef.current = newTotal;
+        setShieldTotal(newTotal);
+        const livesToRestore = Math.floor(newTotal / SHIELD_PER_LIFE) - Math.floor(prevTotal / SHIELD_PER_LIFE);
         if (livesToRestore > 0) {
           setLives((lv) => Math.min(maxLivesRef.current, lv + livesToRestore));
           const healInvuln = healInvulnDuration(newTotal);
@@ -1418,6 +1511,7 @@ export default function FighterGame() {
             if (next <= 0) {
               statusRef.current = "gameover";
               setStatus("gameover");
+              riffPlayerRef.current?.stop();
               setBest((b) => {
                 const nb = Math.max(b, scoreRef.current);
                 try {
@@ -1454,6 +1548,7 @@ export default function FighterGame() {
       if (statusRef.current === "playing" && s.elapsed >= s.levelDuration) {
         statusRef.current = "levelcomplete";
         setStatus("levelcomplete");
+        riffPlayerRef.current?.stop();
         setBest((b) => {
           const nb = Math.max(b, scoreRef.current);
           try {
@@ -1480,16 +1575,17 @@ export default function FighterGame() {
       }
       const { width, height } = s;
       const sky = c.createLinearGradient(0, 0, 0, height);
-      sky.addColorStop(0, "#155a9e");
-      sky.addColorStop(0.4, "#357fbe");
-      sky.addColorStop(0.75, "#79aed7");
-      sky.addColorStop(1, "#c3dfec");
+      sky.addColorStop(0, "#05060f");
+      sky.addColorStop(0.45, "#0c1230");
+      sky.addColorStop(0.8, "#181040");
+      sky.addColorStop(1, "#241452");
       c.fillStyle = sky;
       c.fillRect(0, 0, width, height);
 
       c.save();
-      for (const cl of s.clouds) {
-        drawCloud(c, cl.x, cl.y, cl.r, cl.opacity);
+      for (const st of s.stars) {
+        const twinkle = 0.7 + 0.3 * Math.sin(st.twinklePhase);
+        drawStar(c, st.x, st.y, st.r, st.opacity * twinkle);
       }
       c.restore();
 
@@ -1512,11 +1608,11 @@ export default function FighterGame() {
         c.restore();
       }
 
-      // cash pickups
-      for (const csh of s.cash) {
+      // shield pickups
+      for (const sh of s.shields) {
         c.save();
-        c.translate(csh.x, csh.y);
-        drawCash(c, Math.sin(csh.phase));
+        c.translate(sh.x, sh.y);
+        drawShield(c, Math.sin(sh.phase));
         c.restore();
       }
 
@@ -1590,7 +1686,7 @@ export default function FighterGame() {
   return (
     <div
       ref={containerRef}
-      className="relative h-dvh w-full overflow-hidden select-none bg-[#357fbe]"
+      className="relative h-dvh w-full overflow-hidden select-none bg-[#0c1230]"
     >
       <canvas ref={canvasRef} className="absolute inset-0 block" />
 
@@ -1622,21 +1718,30 @@ export default function FighterGame() {
             0:00
           </div>
         </div>
-        <div className="flex gap-1.5 rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
-          {Array.from({ length: maxLives }, (_, i) => (
-            <span
-              key={i}
-              className={`text-lg leading-none ${i < lives ? "opacity-100" : "opacity-25"}`}
-            >
-              &#9992;
-            </span>
-          ))}
+        <div className="flex items-start gap-1.5">
+          <div className="flex gap-1.5 rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
+            {Array.from({ length: maxLives }, (_, i) => (
+              <span
+                key={i}
+                className={`text-lg leading-none ${i < lives ? "opacity-100" : "opacity-25"}`}
+              >
+                &#9992;
+              </span>
+            ))}
+          </div>
+          <button
+            onClick={() => setMusicMuted((m) => !m)}
+            aria-label={musicMuted ? "Unmute music" : "Mute music"}
+            className="pointer-events-auto rounded-lg bg-black/35 px-2.5 py-1.5 text-lg leading-none backdrop-blur-sm active:scale-95 transition-transform"
+          >
+            {musicMuted ? "🔇" : "🔊"}
+          </button>
         </div>
       </div>
 
       {status === "ready" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 overflow-y-auto bg-black/55 px-6 py-8 text-center text-white font-sans">
-          <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight">Sky Fighter</h1>
+          <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight">Sky Raider</h1>
           <p className="max-w-xs text-sm sm:text-base text-white/80">
             Drag or move your mouse to steer. Your jet auto-fires — dodge homing missiles and falling bombs, and
             shoot down every plane you can.
