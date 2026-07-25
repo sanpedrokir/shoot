@@ -2603,14 +2603,20 @@ export default function FighterGame() {
   }, []);
 
   const isAlly = netRole === "ally";
+  // True for a real single-player run (not the fixed-level Daily Challenge,
+  // not co-op) — the only mode where surviving actually advances soloStartLevel,
+  // so "Play Again" should read as forward progress rather than a replay.
+  const isProgressiveRun = netRole === "solo" && lobbyMode === "solo";
 
   // Locations screen: shows every unlocked location up to the frontier, plus
-  // one locked teaser beyond it, most-recent first. Capped to the last 24 so
-  // an extremely deep run doesn't render an unbounded list.
+  // a handful of upcoming locked ones so players can see what's coming next
+  // without spoiling the whole endless ladder. Capped to the last 24 unlocked
+  // so an extremely deep run doesn't render an unbounded list.
+  const UPCOMING_PREVIEW_COUNT = 5;
   const frontierLocation = locationIndexForLevel(unlockedLevel);
   const locationsListStart = Math.max(1, frontierLocation - 23);
   const locationIndices: number[] = [];
-  for (let i = frontierLocation + 1; i >= locationsListStart; i--) locationIndices.push(i);
+  for (let i = frontierLocation + UPCOMING_PREVIEW_COUNT; i >= locationsListStart; i--) locationIndices.push(i);
 
   return (
     <div
@@ -2718,9 +2724,7 @@ export default function FighterGame() {
                       />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
-                          <span className="truncate text-sm font-bold">
-                            {locked ? "???" : getLocationName(idx)}
-                          </span>
+                          <span className="truncate text-sm font-bold">{getLocationName(idx)}</span>
                           {locked && <span className="text-xs">🔒</span>}
                           {isFrontier && !locked && (
                             <span className="rounded-full bg-emerald-500/80 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide">
@@ -2731,7 +2735,7 @@ export default function FighterGame() {
                         <div className="text-[11px] text-white/70">
                           {locked ? `Reach Level ${startLevel} to unlock` : `Levels ${startLevel}–${endLevel}`}
                         </div>
-                        {!locked && badges.length > 0 && (
+                        {badges.length > 0 && (
                           <div className="mt-1 flex flex-wrap gap-1">
                             {badges.map((b) => (
                               <span
@@ -2911,9 +2915,11 @@ export default function FighterGame() {
       {status === "levelcomplete" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/65 px-6 text-center text-white font-sans">
           <h2 className="text-3xl font-extrabold">You Survived!</h2>
-          {justUnlockedLocation && (
+          {isProgressiveRun && (
             <p className="text-sm font-semibold text-emerald-300">
-              🔓 New location unlocked: {justUnlockedLocation}
+              {justUnlockedLocation
+                ? `🔓 New location unlocked: ${justUnlockedLocation}`
+                : `Up next: Level ${soloStartLevel} · ${getLocationName(locationIndexForLevel(soloStartLevel))}`}
             </p>
           )}
           <p className="text-lg">
@@ -2942,7 +2948,7 @@ export default function FighterGame() {
               onClick={handlePlayAgain}
               className="mt-1 rounded-full bg-blue-600 px-8 py-3 text-base font-bold shadow-lg shadow-blue-900/40 active:scale-95 transition-transform"
             >
-              Play Again
+              {isProgressiveRun ? "Continue →" : "Play Again"}
             </button>
           )}
           <div className="flex gap-4">
