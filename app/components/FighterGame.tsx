@@ -1245,6 +1245,10 @@ export default function FighterGame() {
   const [soloStartLevel, setSoloStartLevel] = useState(1);
   const [justUnlockedLocation, setJustUnlockedLocation] = useState<string | null>(null);
   const [showLocations, setShowLocations] = useState(false);
+  // Set when opening the map to reveal a location the player just unlocked
+  // (rather than the plain "browse from the HUD" case) — the map scrolls to
+  // and blinks this node instead of the frontier.
+  const [highlightLocation, setHighlightLocation] = useState<number | null>(null);
   const locationsScrollRef = useRef<HTMLDivElement | null>(null);
 
   const [lobbyMode, setLobbyMode] = useState<LobbyMode>("solo");
@@ -2690,16 +2694,18 @@ export default function FighterGame() {
   const roadmapPathD = catmullRomPath(
     Array.from({ length: roadmapCount }, (_, k) => roadmapNodeCenter(k))
   );
-  const frontierSeq = roadmapIndices.indexOf(frontierLocation);
-
-  // Auto-scroll the roadmap so the frontier node is in view the moment the
+  // Auto-scroll the roadmap so the relevant node is in view the moment the
   // screen opens, instead of dropping the player at the very bottom (the
-  // start of an endless route) every time.
+  // start of an endless route) every time. Defaults to the frontier, but
+  // prefers a just-unlocked location when opened from that reveal moment.
   useEffect(() => {
     if (!showLocations) return;
     const el = locationsScrollRef.current;
-    if (!el || frontierSeq < 0) return;
-    const target = roadmapNodeCenter(frontierSeq).y;
+    if (!el) return;
+    const targetIdx = highlightLocation ?? frontierLocation;
+    const seq = roadmapIndices.indexOf(targetIdx);
+    if (seq < 0) return;
+    const target = roadmapNodeCenter(seq).y;
     requestAnimationFrame(() => {
       el.scrollTop = Math.max(0, target - el.clientHeight / 2);
     });
@@ -2781,15 +2787,22 @@ export default function FighterGame() {
         </div>
       </div>
 
-      {status === "ready" && showLocations && (
+      {showLocations && (
         <div className="absolute inset-0 z-20 flex flex-col bg-[#05060c] text-white font-sans">
           <div className="flex items-center justify-between px-5 pt-20 pb-2">
             <div>
               <h2 className="text-xl font-extrabold tracking-tight">Locations</h2>
-              <p className="text-[11px] text-white/50">Survive 3 levels to unlock the next stop on the route.</p>
+              <p className="text-[11px] text-white/50">
+                {highlightLocation
+                  ? "This is your new stop on the route."
+                  : "Survive 3 levels to unlock the next stop on the route."}
+              </p>
             </div>
             <button
-              onClick={() => setShowLocations(false)}
+              onClick={() => {
+                setShowLocations(false);
+                setHighlightLocation(null);
+              }}
               aria-label="Close"
               className="rounded-full bg-white/10 px-3 py-1.5 text-sm font-semibold active:scale-95 transition-transform"
             >
@@ -2834,14 +2847,29 @@ export default function FighterGame() {
                 const endLevel = startLevel + 2;
                 const isFrontier = idx === frontierLocation;
                 const isSelected = idx === locationIndexForLevel(soloStartLevel);
+                const isHighlighted = highlightLocation === idx;
                 const badges = perkSummary(idx);
                 return (
                   <div key={idx} className="contents">
+                    {isHighlighted && (
+                      <span
+                        className="pointer-events-none absolute animate-ping rounded-full"
+                        style={{
+                          left: x,
+                          top: y,
+                          width: PATH_NODE_R * 2 + 20,
+                          height: PATH_NODE_R * 2 + 20,
+                          transform: "translate(-50%, -50%)",
+                          background: `${palette.planetEdge}66`,
+                        }}
+                      />
+                    )}
                     <button
                       disabled={locked}
                       onClick={() => {
                         setSoloStartLevel(startLevel);
                         setShowLocations(false);
+                        setHighlightLocation(null);
                       }}
                       aria-label={locked ? `${getLocationName(idx)} (locked)` : `Start at ${getLocationName(idx)}`}
                       className={`absolute flex items-center justify-center rounded-full transition-transform ${
@@ -2854,21 +2882,30 @@ export default function FighterGame() {
                         height: PATH_NODE_R * 2,
                         transform: "translate(-50%, -50%)",
                         background: `radial-gradient(circle at 35% 30%, ${palette.planetCore}, ${palette.planetEdge} 70%, #000 100%)`,
-                        boxShadow: isFrontier
-                          ? `0 0 0 3px rgba(52,211,153,0.9), 0 0 22px 6px ${palette.planetEdge}aa`
-                          : isSelected
-                            ? `0 0 0 3px rgba(96,165,250,0.9), 0 0 14px 3px ${palette.planetEdge}88`
-                            : `0 0 14px 3px ${palette.planetEdge}66`,
+                        boxShadow: isHighlighted
+                          ? `0 0 0 3px rgba(250,204,21,0.95), 0 0 26px 8px rgba(250,204,21,0.6)`
+                          : isFrontier
+                            ? `0 0 0 3px rgba(52,211,153,0.9), 0 0 22px 6px ${palette.planetEdge}aa`
+                            : isSelected
+                              ? `0 0 0 3px rgba(96,165,250,0.9), 0 0 14px 3px ${palette.planetEdge}88`
+                              : `0 0 14px 3px ${palette.planetEdge}66`,
                       }}
                     >
                       {locked && <span className="text-base">🔒</span>}
                       <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-black/70 px-1 text-[10px] font-bold text-white ring-1 ring-white/30">
                         {idx}
                       </span>
-                      {isFrontier && !locked && (
-                        <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 rounded-full bg-emerald-500 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide">
-                          Now
+                      {isHighlighted ? (
+                        <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 rounded-full bg-yellow-400 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide text-black">
+                          New!
                         </span>
+                      ) : (
+                        isFrontier &&
+                        !locked && (
+                          <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 rounded-full bg-emerald-500 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide">
+                            Now
+                          </span>
+                        )
                       )}
                     </button>
 
@@ -3048,9 +3085,20 @@ export default function FighterGame() {
           {isProgressiveRun && (
             <div className="flex flex-col items-center gap-1.5">
               {justUnlockedLocation && (
-                <p className="text-sm font-semibold text-emerald-300">
-                  🔓 New location unlocked: {justUnlockedLocation}
-                </p>
+                <>
+                  <p className="text-sm font-semibold text-emerald-300">
+                    🔓 New location unlocked: {justUnlockedLocation}
+                  </p>
+                  <button
+                    onClick={() => {
+                      setHighlightLocation(locationIndexForLevel(soloStartLevel));
+                      setShowLocations(true);
+                    }}
+                    className="rounded-full bg-white/15 px-4 py-1.5 text-xs font-semibold active:scale-95 transition-transform"
+                  >
+                    🗺️ View New Location
+                  </button>
+                </>
               )}
               <p className="text-sm text-white/80">
                 Next: {getLocationName(locationIndexForLevel(soloStartLevel))} · Level{" "}
