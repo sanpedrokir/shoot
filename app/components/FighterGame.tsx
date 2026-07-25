@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { PresenceChannel } from "pusher-js";
 import {
   MAX_PLAYERS,
@@ -325,6 +325,46 @@ function perkSummary(locationIndex: number): string[] {
   if (p.startingShieldValue > 0) badges.push("shield head start");
   if (p.startingRapidFireBonus > 0) badges.push("rapid-fire start");
   return badges;
+}
+
+// ---------------------------------------------------------------------
+// Locations screen geometry: a winding route through space (planet nodes
+// linked by a smooth curved path) rather than a flat list — climbing from
+// the start at the bottom toward the frontier and a preview of what's next
+// at the top, the same "journey map" shape as a game roadmap.
+// ---------------------------------------------------------------------
+const PATH_WIDTH = 340;
+const PATH_NODE_SPACING = 168;
+const PATH_NODE_R = 30;
+const PATH_TOP_PAD = 90;
+const PATH_BOTTOM_PAD = 90;
+
+// Smooth, non-mechanical left-right swing driven by a sine wave rather than
+// a strict alternating zigzag — clamped well inside the container so the
+// text callout centered under each node never clips off either edge.
+function pathNodeX(seqIndex: number): number {
+  const raw = PATH_WIDTH / 2 + Math.sin(seqIndex * 0.85 + 0.5) * 92;
+  return clamp(raw, 85, PATH_WIDTH - 85);
+}
+
+// Catmull-Rom-to-Bezier conversion: turns a list of node centers into one
+// smooth SVG path (rather than straight segments), matching the flowing
+// curve look of a hand-drawn journey map.
+function catmullRomPath(points: { x: number; y: number }[]): string {
+  if (points.length < 2) return "";
+  let d = `M ${points[0].x},${points[0].y}`;
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[Math.max(0, i - 1)];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[Math.min(points.length - 1, i + 2)];
+    const cp1x = p1.x + (p2.x - p0.x) / 6;
+    const cp1y = p1.y + (p2.y - p0.y) / 6;
+    const cp2x = p2.x - (p3.x - p1.x) / 6;
+    const cp2y = p2.y - (p3.y - p1.y) / 6;
+    d += ` C ${cp1x},${cp1y} ${cp2x},${cp2y} ${p2.x},${p2.y}`;
+  }
+  return d;
 }
 
 // Difficulty grows with the log of the level so early stages ramp up fast
@@ -1205,6 +1245,7 @@ export default function FighterGame() {
   const [soloStartLevel, setSoloStartLevel] = useState(1);
   const [justUnlockedLocation, setJustUnlockedLocation] = useState<string | null>(null);
   const [showLocations, setShowLocations] = useState(false);
+  const locationsScrollRef = useRef<HTMLDivElement | null>(null);
 
   const [lobbyMode, setLobbyMode] = useState<LobbyMode>("solo");
   const [netRole, setNetRole] = useState<NetRole>("solo");
@@ -2630,15 +2671,50 @@ export default function FighterGame() {
   // so "Play Again" should read as forward progress rather than a replay.
   const isProgressiveRun = netRole === "solo" && lobbyMode === "solo";
 
-  // Locations screen: shows every unlocked location up to the frontier, plus
-  // a handful of upcoming locked ones so players can see what's coming next
-  // without spoiling the whole endless ladder. Capped to the last 24 unlocked
-  // so an extremely deep run doesn't render an unbounded list.
+  // Locations roadmap: a winding route of location nodes climbing from the
+  // start toward the frontier, plus a handful of upcoming locked ones so
+  // players can see what's coming without spoiling the whole endless ladder.
+  // Capped to the last 24 unlocked so an extremely deep run doesn't render an
+  // unbounded path.
   const UPCOMING_PREVIEW_COUNT = 5;
   const frontierLocation = locationIndexForLevel(unlockedLevel);
-  const locationsListStart = Math.max(1, frontierLocation - 23);
-  const locationIndices: number[] = [];
-  for (let i = frontierLocation + UPCOMING_PREVIEW_COUNT; i >= locationsListStart; i--) locationIndices.push(i);
+  const roadmapStart = Math.max(1, frontierLocation - 23);
+  const roadmapIndices: number[] = [];
+  for (let i = roadmapStart; i <= frontierLocation + UPCOMING_PREVIEW_COUNT; i++) roadmapIndices.push(i);
+  const roadmapCount = roadmapIndices.length;
+  const roadmapHeight = PATH_TOP_PAD + PATH_BOTTOM_PAD + Math.max(0, roadmapCount - 1) * PATH_NODE_SPACING;
+  const roadmapNodeCenter = (k: number) => ({
+    x: pathNodeX(k),
+    y: PATH_TOP_PAD + (roadmapCount - 1 - k) * PATH_NODE_SPACING,
+  });
+  const roadmapPathD = catmullRomPath(
+    Array.from({ length: roadmapCount }, (_, k) => roadmapNodeCenter(k))
+  );
+  const frontierSeq = roadmapIndices.indexOf(frontierLocation);
+
+  // Auto-scroll the roadmap so the frontier node is in view the moment the
+  // screen opens, instead of dropping the player at the very bottom (the
+  // start of an endless route) every time.
+  useEffect(() => {
+    if (!showLocations) return;
+    const el = locationsScrollRef.current;
+    if (!el || frontierSeq < 0) return;
+    const target = roadmapNodeCenter(frontierSeq).y;
+    requestAnimationFrame(() => {
+      el.scrollTop = Math.max(0, target - el.clientHeight / 2);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showLocations]);
+
+  const roadmapStars = useMemo(() => {
+    const rand = mulberry32(4242);
+    return Array.from({ length: 80 }, () => ({
+      x: rand() * 100,
+      y: rand() * 100,
+      r: 0.6 + rand() * 1.6,
+      o: 0.15 + rand() * 0.5,
+    }));
+  }, []);
 
   return (
     <div
@@ -2647,7 +2723,7 @@ export default function FighterGame() {
     >
       <canvas ref={canvasRef} className="absolute inset-0 block" />
 
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between p-3 sm:p-4 text-white font-sans">
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex items-start justify-between p-3 sm:p-4 text-white font-sans">
         {netRole === "solo" ? (
           <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
             <div className="text-xs uppercase tracking-wide text-white/60">Score</div>
@@ -2686,6 +2762,15 @@ export default function FighterGame() {
               </span>
             ))}
           </div>
+          {status === "ready" && lobbyMode === "solo" && (
+            <button
+              onClick={() => setShowLocations(true)}
+              aria-label="Locations"
+              className="pointer-events-auto rounded-lg bg-black/35 px-2.5 py-1.5 text-lg leading-none backdrop-blur-sm active:scale-95 transition-transform"
+            >
+              🗺️
+            </button>
+          )}
           <button
             onClick={() => setMusicMuted((m) => !m)}
             aria-label={musicMuted ? "Unmute music" : "Mute music"}
@@ -2698,12 +2783,10 @@ export default function FighterGame() {
 
       {status === "ready" && showLocations && (
         <div className="absolute inset-0 z-20 flex flex-col bg-[#05060c] text-white font-sans">
-          <div className="flex items-center justify-between px-5 pt-6 pb-3">
+          <div className="flex items-center justify-between px-5 pt-20 pb-2">
             <div>
               <h2 className="text-xl font-extrabold tracking-tight">Locations</h2>
-              <p className="text-[11px] text-white/50">
-                Survive 3 levels to unlock the next location. Tap an unlocked one to start there.
-              </p>
+              <p className="text-[11px] text-white/50">Survive 3 levels to unlock the next stop on the route.</p>
             </div>
             <button
               onClick={() => setShowLocations(false)}
@@ -2713,9 +2796,38 @@ export default function FighterGame() {
               ✕
             </button>
           </div>
-          <div className="flex-1 overflow-y-auto px-4 pb-6">
-            <div className="flex flex-col gap-2.5">
-              {locationIndices.map((idx) => {
+
+          <div ref={locationsScrollRef} className="relative flex-1 overflow-y-auto overflow-x-hidden">
+            <div
+              className="pointer-events-none absolute inset-0"
+              style={{
+                background:
+                  "radial-gradient(circle at 25% 20%, rgba(120,90,200,0.16), transparent 55%), radial-gradient(circle at 75% 60%, rgba(80,150,220,0.14), transparent 55%)",
+              }}
+            />
+            <div className="relative mx-auto" style={{ width: PATH_WIDTH, height: roadmapHeight }}>
+              {roadmapStars.map((s, i) => (
+                <span
+                  key={i}
+                  className="absolute rounded-full bg-white"
+                  style={{ left: `${s.x}%`, top: `${s.y}%`, width: s.r, height: s.r, opacity: s.o }}
+                />
+              ))}
+
+              <svg width={PATH_WIDTH} height={roadmapHeight} className="absolute inset-0">
+                <path d={roadmapPathD} fill="none" stroke="rgba(140,170,255,0.18)" strokeWidth={10} strokeLinecap="round" />
+                <path
+                  d={roadmapPathD}
+                  fill="none"
+                  stroke="rgba(255,255,255,0.4)"
+                  strokeWidth={2.5}
+                  strokeLinecap="round"
+                  strokeDasharray="1 11"
+                />
+              </svg>
+
+              {roadmapIndices.map((idx, k) => {
+                const { x, y } = roadmapNodeCenter(k);
                 const locked = idx > frontierLocation;
                 const palette = LOCATION_PALETTES[idx % LOCATION_PALETTES.length];
                 const startLevel = (idx - 1) * 3 + 1;
@@ -2724,56 +2836,61 @@ export default function FighterGame() {
                 const isSelected = idx === locationIndexForLevel(soloStartLevel);
                 const badges = perkSummary(idx);
                 return (
-                  <button
-                    key={idx}
-                    disabled={locked}
-                    onClick={() => {
-                      setSoloStartLevel(startLevel);
-                      setShowLocations(false);
-                    }}
-                    className={`relative overflow-hidden rounded-2xl px-4 py-3.5 text-left transition-transform ${
-                      locked ? "opacity-45" : "active:scale-[0.98]"
-                    } ${isSelected ? "ring-2 ring-blue-400" : ""}`}
-                    style={{
-                      background: `linear-gradient(135deg, ${palette.sky[1]}, ${palette.sky[3]})`,
-                    }}
-                  >
-                    <div className="flex items-center gap-3">
-                      <span
-                        className="h-9 w-9 shrink-0 rounded-full"
-                        style={{
-                          background: `radial-gradient(circle at 35% 30%, ${palette.planetCore}, ${palette.planetEdge} 70%, #000 100%)`,
-                          boxShadow: `0 0 14px 2px ${palette.planetEdge}88`,
-                        }}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5">
-                          <span className="truncate text-sm font-bold">{getLocationName(idx)}</span>
-                          {locked && <span className="text-xs">🔒</span>}
-                          {isFrontier && !locked && (
-                            <span className="rounded-full bg-emerald-500/80 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide">
-                              Frontier
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-[11px] text-white/70">
-                          {locked ? `Reach Level ${startLevel} to unlock` : `Levels ${startLevel}–${endLevel}`}
-                        </div>
-                        {badges.length > 0 && (
-                          <div className="mt-1 flex flex-wrap gap-1">
-                            {badges.map((b) => (
-                              <span
-                                key={b}
-                                className="rounded-full bg-black/30 px-1.5 py-0.5 text-[9px] text-white/85"
-                              >
-                                {b}
-                              </span>
-                            ))}
-                          </div>
-                        )}
+                  <div key={idx} className="contents">
+                    <button
+                      disabled={locked}
+                      onClick={() => {
+                        setSoloStartLevel(startLevel);
+                        setShowLocations(false);
+                      }}
+                      aria-label={locked ? `${getLocationName(idx)} (locked)` : `Start at ${getLocationName(idx)}`}
+                      className={`absolute flex items-center justify-center rounded-full transition-transform ${
+                        locked ? "opacity-50 grayscale" : "active:scale-95"
+                      }`}
+                      style={{
+                        left: x,
+                        top: y,
+                        width: PATH_NODE_R * 2,
+                        height: PATH_NODE_R * 2,
+                        transform: "translate(-50%, -50%)",
+                        background: `radial-gradient(circle at 35% 30%, ${palette.planetCore}, ${palette.planetEdge} 70%, #000 100%)`,
+                        boxShadow: isFrontier
+                          ? `0 0 0 3px rgba(52,211,153,0.9), 0 0 22px 6px ${palette.planetEdge}aa`
+                          : isSelected
+                            ? `0 0 0 3px rgba(96,165,250,0.9), 0 0 14px 3px ${palette.planetEdge}88`
+                            : `0 0 14px 3px ${palette.planetEdge}66`,
+                      }}
+                    >
+                      {locked && <span className="text-base">🔒</span>}
+                      <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-black/70 px-1 text-[10px] font-bold text-white ring-1 ring-white/30">
+                        {idx}
+                      </span>
+                      {isFrontier && !locked && (
+                        <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 rounded-full bg-emerald-500 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide">
+                          Now
+                        </span>
+                      )}
+                    </button>
+
+                    <div
+                      className="absolute w-36 text-center"
+                      style={{ left: x, top: y + PATH_NODE_R + 10, transform: "translateX(-50%)" }}
+                    >
+                      <div className="truncate text-xs font-bold">{getLocationName(idx)}</div>
+                      <div className="text-[10px] text-white/60">
+                        {locked ? `Reach Level ${startLevel}` : `Levels ${startLevel}–${endLevel}`}
                       </div>
+                      {badges.length > 0 && (
+                        <div className="mt-1 flex flex-wrap justify-center gap-1">
+                          {badges.map((b) => (
+                            <span key={b} className="rounded-full bg-black/40 px-1.5 py-0.5 text-[8px] text-white/80">
+                              {b}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  </button>
+                  </div>
                 );
               })}
             </div>
@@ -2782,53 +2899,37 @@ export default function FighterGame() {
       )}
 
       {status === "ready" && !showLocations && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 overflow-y-auto bg-black/55 px-6 py-8 text-center text-white font-sans">
-          <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight">Sky Raider</h1>
-          <p className="max-w-xs text-sm sm:text-base text-white/80">
-            Drag or move your mouse to steer. Your jet auto-fires — dodge homing missiles and falling bombs, and
-            shoot down every plane you can.
-          </p>
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-5 overflow-y-auto bg-gradient-to-b from-black/25 via-black/45 to-black/75 px-6 py-8 text-center text-white font-sans">
+          <div className="flex flex-col items-center gap-0.5">
+            <span className="text-4xl drop-shadow-[0_0_18px_rgba(120,170,255,0.6)]">🛩️</span>
+            <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight drop-shadow-[0_2px_14px_rgba(80,140,255,0.4)]">
+              Sky Raider
+            </h1>
+          </div>
 
-          <div className="flex flex-wrap justify-center gap-2 rounded-full bg-white/10 p-1 text-sm">
-            {(["solo", "daily", "host", "join"] as LobbyMode[]).map((m) => (
+          <div className="grid w-full max-w-xs grid-cols-2 gap-2.5">
+            {(
+              [
+                { m: "solo", label: "Single Player", icon: "🎮" },
+                { m: "daily", label: "Daily Challenge", icon: "⚡" },
+                { m: "host", label: "Get Ally", icon: "🤝" },
+                { m: "join", label: "Join Ally", icon: "🔗" },
+              ] as { m: LobbyMode; label: string; icon: string }[]
+            ).map(({ m, label, icon }) => (
               <button
                 key={m}
                 onClick={() => selectLobbyMode(m)}
-                className={`rounded-full px-4 py-1.5 font-semibold transition-colors ${
-                  lobbyMode === m ? "bg-blue-600" : "text-white/70"
+                className={`flex flex-col items-center gap-1 rounded-2xl px-3 py-3.5 text-sm font-bold transition-all active:scale-95 ${
+                  lobbyMode === m
+                    ? "bg-blue-600 shadow-lg shadow-blue-900/40"
+                    : "bg-white/10 text-white/80 hover:bg-white/15"
                 }`}
               >
-                {m === "solo"
-                  ? "Single Player"
-                  : m === "daily"
-                    ? "Daily Challenge"
-                    : m === "host"
-                      ? "Get Ally"
-                      : "Join Ally"}
+                <span className="text-xl leading-none">{icon}</span>
+                {label}
               </button>
             ))}
           </div>
-
-          {lobbyMode === "solo" && (
-            <div className="flex w-64 flex-col items-center gap-2 rounded-xl bg-white/10 px-4 py-3">
-              <div className="flex flex-col items-center gap-1">
-                <span className="text-[10px] uppercase tracking-wide text-white/50">Flying From</span>
-                <span className="text-sm font-bold">
-                  🌌 {getLocationName(locationIndexForLevel(soloStartLevel))}
-                </span>
-                <LocationProgressDots current={levelWithinLocation(soloStartLevel)} />
-                <span className="text-[10px] text-white/50">
-                  Level {levelWithinLocation(soloStartLevel)} of 3
-                </span>
-              </div>
-              <button
-                onClick={() => setShowLocations(true)}
-                className="rounded-full bg-white/15 px-4 py-1.5 text-xs font-semibold active:scale-95 transition-transform"
-              >
-                🗺️ Browse Locations
-              </button>
-            </div>
-          )}
 
           {lobbyMode === "daily" && (
             <div className="flex w-64 flex-col items-center gap-1.5 rounded-xl bg-white/10 px-4 py-3">
@@ -2937,9 +3038,6 @@ export default function FighterGame() {
             >
               Start
             </button>
-          )}
-          {(lobbyMode === "solo" || lobbyMode === "daily") && (
-            <p className="text-xs text-white/50">Arrow keys / WASD also work on desktop</p>
           )}
         </div>
       )}
