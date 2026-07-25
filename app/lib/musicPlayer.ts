@@ -1,16 +1,18 @@
 // Loops a real audio file for the background score instead of synthesizing
-// one — drop the track at public/audio/theme.mp3. The interface mirrors
-// what a synthesized player would expose (unlock/start/stop/setMuted/
-// dispose) so the caller doesn't need to know which one it's using.
+// one. `start(src)` takes the track to play — solo and co-op games use
+// different files — and only reassigns the underlying element's src (which
+// restarts playback from 0) when it's actually changing, so replaying the
+// same track mid-session doesn't stutter.
 
 export interface MusicPlayer {
   // Primes playback on a user gesture without audibly starting yet (browsers
   // block audio.play() outside a gesture). Playing then immediately pausing
   // is the standard trick — after this, start() can be called later from a
   // non-gesture context (e.g. a network event on the ally's client) and
-  // still succeed.
-  unlock(): void;
-  start(): void;
+  // still succeed. `src` here just needs to be *a* valid track to prime
+  // with; start() will switch to whichever track is actually wanted.
+  unlock(src: string): void;
+  start(src: string): void;
   stop(): void;
   setMuted(muted: boolean): void;
   dispose(): void;
@@ -18,31 +20,39 @@ export interface MusicPlayer {
 
 const VOLUME = 0.5;
 
-export function createMusicPlayer(src: string): MusicPlayer {
+export function createMusicPlayer(): MusicPlayer {
   let audio: HTMLAudioElement | null = null;
+  let currentSrc: string | null = null;
   let muted = false;
 
   function ensure() {
     if (audio) return;
-    audio = new Audio(src);
+    audio = new Audio();
     audio.loop = true;
     audio.preload = "auto";
     audio.volume = muted ? 0 : VOLUME;
   }
 
+  function setTrack(src: string) {
+    ensure();
+    if (currentSrc === src) return;
+    currentSrc = src;
+    audio!.src = src;
+  }
+
   return {
-    unlock() {
-      ensure();
+    unlock(src: string) {
+      setTrack(src);
       audio!
         .play()
         .then(() => audio?.pause())
         .catch(() => {
-          // No track at `src` yet, or the browser still refused — harmless,
+          // No track there yet, or the browser still refused — harmless,
           // start() will just no-op silently until a file exists.
         });
     },
-    start() {
-      ensure();
+    start(src: string) {
+      setTrack(src);
       audio!.play().catch(() => {});
     },
     stop() {
@@ -57,6 +67,7 @@ export function createMusicPlayer(src: string): MusicPlayer {
         audio.pause();
         audio.src = "";
         audio = null;
+        currentSrc = null;
       }
     },
   };

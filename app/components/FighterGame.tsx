@@ -79,6 +79,8 @@ interface GameState {
   // enemies, the bomb lull) purely through the normal snapshot sync.
   midpointWaveSpawned: boolean;
   bombsSuppressedUntil: number;
+  // Same pattern for the final-20-seconds "lined up" finale wave.
+  finalWaveSpawned: boolean;
 }
 
 const PLAYER_RADIUS = 14;
@@ -107,6 +109,9 @@ function healInvulnDuration(shieldTotal: number) {
   return clamp(2 + shieldTotal * 0.004, 2.5, 6);
 }
 const GRAVITY = 130;
+// Solo and co-op games play different background tracks.
+const SOLO_MUSIC_TRACK = "/audio/theme.mp3";
+const COOP_MUSIC_TRACK = "/audio/theme-coop.mp3";
 // Pusher hard-caps client events at 10/sec per connection; staying well
 // under that avoids events getting silently dropped (which reads as
 // mounting lag that eventually "hangs" once updates stop arriving).
@@ -225,6 +230,7 @@ function makeInitialState(width: number, height: number, level: number, playerId
     keys: new Set(),
     midpointWaveSpawned: false,
     bombsSuppressedUntil: 0,
+    finalWaveSpawned: false,
   };
 }
 
@@ -785,7 +791,7 @@ export default function FighterGame() {
   }, []);
 
   useEffect(() => {
-    musicPlayerRef.current = createMusicPlayer("/audio/theme.mp3");
+    musicPlayerRef.current = createMusicPlayer();
     return () => {
       musicPlayerRef.current?.dispose();
       musicPlayerRef.current = null;
@@ -865,7 +871,7 @@ export default function FighterGame() {
     // this call and the next React commit.
     statusRef.current = "playing";
     setStatus("playing");
-    musicPlayerRef.current?.start();
+    musicPlayerRef.current?.start(role === "solo" ? SOLO_MUSIC_TRACK : COOP_MUSIC_TRACK);
   };
 
   const startSolo = () => {
@@ -873,7 +879,7 @@ export default function FighterGame() {
   };
 
   const hostRoom = () => {
-    musicPlayerRef.current?.unlock();
+    musicPlayerRef.current?.unlock(COOP_MUSIC_TRACK);
     const code = generateRoomCode();
     setRoomCode(code);
     setConnStatus("connecting");
@@ -909,7 +915,7 @@ export default function FighterGame() {
   };
 
   const joinRoom = (code: string) => {
-    musicPlayerRef.current?.unlock();
+    musicPlayerRef.current?.unlock(COOP_MUSIC_TRACK);
     if (!/^\d{3}$/.test(code)) {
       setConnStatus("error");
       setConnError("Enter the 3-digit code your host shared.");
@@ -1249,7 +1255,7 @@ export default function FighterGame() {
       if (snap.status !== statusRef.current) {
         statusRef.current = snap.status;
         setStatus(snap.status);
-        if (snap.status === "playing") musicPlayerRef.current?.start();
+        if (snap.status === "playing") musicPlayerRef.current?.start(COOP_MUSIC_TRACK);
         else musicPlayerRef.current?.stop();
       }
     }
@@ -1337,7 +1343,10 @@ export default function FighterGame() {
       const difficulty = levelDifficulty(s.level) * timeDifficultyMultiplier(s.elapsed);
       const { bombFocus, swarmFocus } = phaseFocus(s.elapsed);
       s.spawnTimer -= dt;
-      if (s.spawnTimer <= 0) {
+      // Once the finale lineup has landed, the regular random bursts stop —
+      // it should read as a clean shooting gallery, not get cluttered by
+      // more planes falling in around it.
+      if (s.spawnTimer <= 0 && !s.finalWaveSpawned) {
         s.spawnTimer = clamp(1.6 - difficulty * 0.5 - swarmFocus * 0.3, 0.45, 1.6) + Math.random() * 0.3;
         // Every burst is at least a pair so the wedge formation always reads
         // as a squadron arriving together — plus one extra enemy per
@@ -1393,6 +1402,33 @@ export default function FighterGame() {
           });
         }
         s.bombsSuppressedUntil = s.elapsed + 10;
+      }
+
+      // Finale: with 20 seconds left on the clock, every remaining enemy
+      // this level lines up together in a single slow-drifting row instead
+      // of the usual falling bursts — a clean last shooting-gallery moment
+      // before time runs out, rather than a continued random gauntlet.
+      const timeLeft = s.levelDuration - s.elapsed;
+      if (!s.finalWaveSpawned && timeLeft <= 20) {
+        s.finalWaveSpawned = true;
+        const cols = 7;
+        const spacingX = 46;
+        const offsets = gridFormation(1, cols, spacingX, 0);
+        const maxAbsDx = Math.max(...offsets.map((o) => Math.abs(o.dx)));
+        const margin = 30 + maxAbsDx;
+        const anchorX = clamp(s.width / 2, margin, Math.max(margin, s.width - margin));
+        for (const offset of offsets) {
+          s.enemies.push({
+            x: clamp(anchorX + offset.dx, 30, s.width - 30),
+            y: -30 + offset.dy,
+            vy: 16 + Math.random() * 10,
+            phase: Math.random() * Math.PI * 2,
+            amp: 10 + Math.random() * 15,
+            scale: 0.85 + Math.random() * 0.35,
+            fireTimer: 1.8 + Math.random() * 1.8,
+            bombTimer: 1.2 + Math.random() * 2.2,
+          });
+        }
       }
 
       for (const en of s.enemies) {
@@ -1794,7 +1830,7 @@ export default function FighterGame() {
           </div>
         )}
         <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm text-center">
-          <div className="text-xs uppercase tracking-wide text-white/60">Best</div>
+          <div className="text-xs uppercase tracking-wide text-white/60">Best Score</div>
           <div className="text-lg font-bold tabular-nums leading-tight">{best}</div>
         </div>
         <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm text-center">
