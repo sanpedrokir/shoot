@@ -448,8 +448,12 @@ function drawJet(
   ctx.strokeStyle = scheme.stroke;
   ctx.stroke(fuselage);
 
+  // "source-atop" only paints over pixels the fuselage fill already
+  // touched, giving the same confined-to-the-silhouette result as clip()
+  // without the per-frame clip-mask cost — cheaper on real (especially
+  // mobile) hardware with a dozen-plus jets on screen at once.
   ctx.save();
-  ctx.clip(fuselage);
+  ctx.globalCompositeOperation = "source-atop";
   const volumeGrad = ctx.createLinearGradient(-9, 0, 9, 0);
   volumeGrad.addColorStop(0, "rgba(255,255,255,0.42)");
   volumeGrad.addColorStop(0.32, "rgba(255,255,255,0.12)");
@@ -1936,18 +1940,15 @@ export default function FighterGame() {
         c.restore();
       }
 
-      // enemies — bank angle approximates each one's current sideways
-      // velocity (the derivative of whichever sway/orbit motion it's using)
-      // so the lean visibly matches the direction it's actually moving.
+      // enemies — no bank tilt: they're in continuous sine-wave sway (or
+      // orbit), not discrete steering like the player, so a velocity-
+      // derived bank angle was always nonzero and read as a constant wobble
+      // rather than an occasional lean into a turn.
       for (const en of s.enemies) {
-        const sidewaysVel = en.orbit
-          ? -Math.sin(en.orbit.angle) * en.orbit.radius * en.orbit.speed
-          : Math.cos(en.phase) * en.amp * 1.6;
-        const bank = clamp(sidewaysVel * 0.018, -0.5, 0.5);
         c.save();
         c.translate(en.x, en.y);
         drawJetShadow(c, en.scale);
-        c.rotate(Math.PI + bank);
+        c.rotate(Math.PI);
         drawJet(c, en.scale, Math.abs(Math.sin(s.elapsed * 18 + en.phase)), ENEMY_SCHEME);
         c.restore();
       }
