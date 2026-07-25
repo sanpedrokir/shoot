@@ -84,8 +84,13 @@ interface GameState {
   // enemies, the bomb lull) purely through the normal snapshot sync.
   midpointWaveSpawned: boolean;
   bombsSuppressedUntil: number;
-  // Same pattern for the final-20-seconds "lined up" finale wave.
+  // Same pattern for the final-15-seconds orbiting finale cluster. Slot
+  // centers are fixed once the cluster spawns; finalRespawnTimer drives
+  // topping up any slot a player clears out, so the cluster stays populated
+  // for the whole window instead of running dry once destroyed.
   finalWaveSpawned: boolean;
+  finalSlots: { cx: number; cy: number }[];
+  finalRespawnTimer: number;
 }
 
 const PLAYER_RADIUS = 14;
@@ -236,6 +241,8 @@ function makeInitialState(width: number, height: number, level: number, playerId
     midpointWaveSpawned: false,
     bombsSuppressedUntil: 0,
     finalWaveSpawned: false,
+    finalSlots: [],
+    finalRespawnTimer: 0,
   };
 }
 
@@ -1189,9 +1196,15 @@ export default function FighterGame() {
         pl.y += (pl.targetY - pl.y) * Math.min(1, dt * 10);
       }
       for (const en of s.enemies) {
-        en.y += en.vy * dt;
-        en.phase += dt * 1.6;
-        en.x = clamp(en.x + Math.sin(en.phase) * en.amp * dt * 0.6, 20, s.width - 20);
+        if (en.orbit) {
+          en.orbit.angle += en.orbit.speed * dt;
+          en.x = clamp(en.orbit.cx + Math.cos(en.orbit.angle) * en.orbit.radius, 20, s.width - 20);
+          en.y = en.orbit.cy + Math.sin(en.orbit.angle) * en.orbit.radius;
+        } else {
+          en.y += en.vy * dt;
+          en.phase += dt * 1.6;
+          en.x = clamp(en.x + Math.sin(en.phase) * en.amp * dt * 0.6, 20, s.width - 20);
+        }
       }
       for (const m of s.missiles) {
         m.x += m.vx * dt;
@@ -1239,6 +1252,15 @@ export default function FighterGame() {
         scale: ne.scale,
         fireTimer: 1,
         bombTimer: 1,
+        orbit: ne.orbit
+          ? {
+              cx: ne.orbit.cx * scaleX,
+              cy: ne.orbit.cy * scaleY,
+              radius: ne.orbit.radius * scaleX,
+              angle: ne.orbit.angle,
+              speed: ne.orbit.speed,
+            }
+          : undefined,
       }));
       s.missiles = snap.missiles.map((nm) => ({
         x: nm.x * scaleX,
@@ -1293,6 +1315,15 @@ export default function FighterGame() {
             scale: round1(en.scale),
             phase: round1(en.phase),
             amp: round1(en.amp),
+            orbit: en.orbit
+              ? {
+                  cx: round1(en.orbit.cx),
+                  cy: round1(en.orbit.cy),
+                  radius: round1(en.orbit.radius),
+                  angle: round1(en.orbit.angle),
+                  speed: round1(en.orbit.speed),
+                }
+              : undefined,
           })),
         missiles: s.missiles
           .slice(0, MAX_SNAPSHOT_ENTITIES)
@@ -1356,10 +1387,11 @@ export default function FighterGame() {
         s.spawnTimer = clamp(1.6 - difficulty * 0.5 - swarmFocus * 0.3, 0.45, 1.6) + Math.random() * 0.3;
         // Every burst is at least a pair so the wedge formation always reads
         // as a squadron arriving together — plus one extra enemy per
-        // teammate, plus a little more on top during the peak of a
-        // squadron-swarm phase.
+        // teammate beyond the first (so co-op consistently sees a bit more
+        // to shoot at than solo), plus a little more on top during the
+        // peak of a squadron-swarm phase.
         const extraSwarm = Math.min(1, Math.floor(swarmFocus * 2.2));
-        const count = Math.max(2, s.players.length) + extraSwarm;
+        const count = 2 + (s.players.length - 1) + extraSwarm;
         const spacing = 34;
         const offsets = wedgeFormation(count, spacing, 22);
         const maxAbsDx = Math.max(...offsets.map((o) => Math.abs(o.dx)));
@@ -1410,44 +1442,62 @@ export default function FighterGame() {
         s.bombsSuppressedUntil = s.elapsed + 10;
       }
 
-      // Finale: with 15 seconds left on the clock, a dense cluster of
-      // enemies arrives and each one loops continuously around its own spot
-      // in the formation instead of falling through and off the screen —
+      // Finale: with 10 seconds left on the clock, a wide gathered band of
+      // enemies arrives near the top of the screen and each one loops
+      // continuously around its own spot in the formation instead of
+      // falling through and off the screen —
       // they stay put (and keep shooting) until the player clears them or
       // time runs out, rather than draining away and leaving nothing to
-      // shoot at for the last few seconds.
+      // shoot at for the last few seconds. Any slot the player clears out
+      // gets a fresh enemy after a short beat, so a fast player emptying the
+      // whole cluster doesn't leave the sky empty for the rest of the window
+      // — it keeps refilling until time actually runs out.
       const timeLeft = s.levelDuration - s.elapsed;
-      if (!s.finalWaveSpawned && timeLeft <= 15) {
+      const spawnFinalEnemy = (cx: number, cy: number) => {
+        s.enemies.push({
+          x: cx,
+          y: cy,
+          vy: 0,
+          phase: Math.random() * Math.PI * 2,
+          amp: 0,
+          scale: 0.85 + Math.random() * 0.35,
+          fireTimer: 1.8 + Math.random() * 1.8,
+          bombTimer: 1.2 + Math.random() * 2.2,
+          orbit: {
+            cx,
+            cy,
+            radius: 12 + Math.random() * 10,
+            angle: Math.random() * Math.PI * 2,
+            speed: (Math.random() < 0.5 ? -1 : 1) * (1.1 + Math.random() * 0.9),
+          },
+        });
+      };
+      if (!s.finalWaveSpawned && timeLeft <= 10) {
         s.finalWaveSpawned = true;
-        const rows = 3;
-        const cols = 5;
-        const spacingX = 48;
-        const spacingY = 44;
+        const rows = 2;
+        const cols = 6;
+        const spacingX = 54;
+        const spacingY = 42;
         const offsets = gridFormation(rows, cols, spacingX, spacingY);
         const maxAbsDx = Math.max(...offsets.map((o) => Math.abs(o.dx)));
         const margin = 30 + maxAbsDx;
         const anchorX = clamp(s.width / 2, margin, Math.max(margin, s.width - margin));
-        const anchorY = s.height * 0.32;
-        for (const offset of offsets) {
-          const cx = clamp(anchorX + offset.dx, 30, s.width - 30);
-          const cy = anchorY + offset.dy;
-          s.enemies.push({
-            x: cx,
-            y: cy,
-            vy: 0,
-            phase: Math.random() * Math.PI * 2,
-            amp: 0,
-            scale: 0.85 + Math.random() * 0.35,
-            fireTimer: 1.8 + Math.random() * 1.8,
-            bombTimer: 1.2 + Math.random() * 2.2,
-            orbit: {
-              cx,
-              cy,
-              radius: 12 + Math.random() * 10,
-              angle: Math.random() * Math.PI * 2,
-              speed: (Math.random() < 0.5 ? -1 : 1) * (1.1 + Math.random() * 0.9),
-            },
-          });
+        const anchorY = s.height * 0.16;
+        s.finalSlots = offsets.map((offset) => ({
+          cx: clamp(anchorX + offset.dx, 30, s.width - 30),
+          cy: anchorY + offset.dy,
+        }));
+        for (const slot of s.finalSlots) spawnFinalEnemy(slot.cx, slot.cy);
+      } else if (s.finalWaveSpawned && timeLeft > 0) {
+        s.finalRespawnTimer -= dt;
+        if (s.finalRespawnTimer <= 0) {
+          s.finalRespawnTimer = 0.8 + Math.random() * 0.8;
+          const occupied = new Set(s.enemies.filter((en) => en.orbit).map((en) => `${en.orbit!.cx},${en.orbit!.cy}`));
+          const emptySlots = s.finalSlots.filter((slot) => !occupied.has(`${slot.cx},${slot.cy}`));
+          if (emptySlots.length > 0) {
+            const slot = emptySlots[Math.floor(Math.random() * emptySlots.length)];
+            spawnFinalEnemy(slot.cx, slot.cy);
+          }
         }
       }
 
