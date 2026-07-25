@@ -15,7 +15,7 @@ import {
 import { createMusicPlayer, type MusicPlayer } from "../lib/musicPlayer";
 import AuthPanel, { type AuthUser, type LeaderboardTop } from "./AuthPanel";
 
-type Bullet = { x: number; y: number; vy: number; ownerId: string };
+type Bullet = { x: number; y: number; vy: number; ownerId: string; rapid: boolean };
 type Missile = { x: number; y: number; vy: number; vx: number };
 type Bomb = { x: number; y: number; vy: number; rot: number };
 type Shield = { x: number; y: number; vy: number; phase: number };
@@ -86,6 +86,12 @@ interface GameState {
   particles: Particle[];
   stars: Star[];
   nebulae: Nebula[];
+  // Not networked — derived purely from `level`, which is already synced,
+  // so the ally computes the identical theme locally.
+  locationTheme: LocationTheme;
+  // Host/solo-simulation-only (see perksForLocation) — the ally never runs
+  // the fire loop itself, so this never needs to be networked.
+  baseFireInterval: number;
   spawnTimer: number;
   shieldTimer: number;
   rapidFireTimer: number;
@@ -144,6 +150,9 @@ const GRAVITY = 130;
 // Solo and co-op games play different background tracks.
 const SOLO_MUSIC_TRACK = "/audio/theme.mp3";
 const COOP_MUSIC_TRACK = "/audio/theme-coop.mp3";
+// Soft jazz piano plays while browsing the Locations screen — a strategy-map
+// moment rather than gameplay, so it gets its own calmer track.
+const LOCATIONS_MUSIC_TRACK = "/audio/theme-locations.mp3";
 // Everyone gets the same starting difficulty for the daily challenge — a
 // bit more bite than the level-1 default, since it's meant to be a real
 // challenge to compete over, not just another normal run.
@@ -154,6 +163,147 @@ const DAILY_CHALLENGE_LEVEL = 5;
 const BROADCAST_INTERVAL = 1 / 8;
 const INPUT_SEND_INTERVAL = 1 / 8;
 const MAX_SNAPSHOT_ENTITIES = 40;
+
+// ---------------------------------------------------------------------
+// Locations: every 3 levels is one named "location" the player travels
+// to. Endless and fully deterministic — the same location index always
+// produces the same name and scenery, on host and ally alike, computed
+// locally from the synced level number rather than sent over the network.
+// ---------------------------------------------------------------------
+
+function locationIndexForLevel(level: number): number {
+  return Math.floor((level - 1) / 3) + 1;
+}
+
+// A tiny seeded PRNG (mulberry32) so "the same location always looks the
+// same" without needing to network any of this — both host and ally derive
+// it purely from the location index.
+function mulberry32(seed: number) {
+  let s = seed >>> 0;
+  return function () {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const LOCATION_PREFIXES = [
+  "Kepler", "Nebula", "Cryo", "Helix", "Vortex", "Ion", "Quantum", "Solaris",
+  "Titan", "Nova", "Zenith", "Axiom", "Umbra", "Lumen", "Orbis", "Pulsar",
+  "Magnetar", "Aether", "Photon", "Nexus", "Vega", "Draco", "Lyra", "Hadron", "Meridian",
+];
+const LOCATION_ROOTS = [
+  "Drift", "Sector", "Vault", "Expanse", "Rift", "Cluster", "Belt", "Array",
+  "Chasm", "Reach", "Zone", "Field", "Wake", "Spire", "Basin", "Corridor",
+  "Gate", "Trench", "Bastion", "Verge",
+];
+const LOCATION_TAILS = [
+  "Prime", "Theta", "Delta", "Omega", "IX", "VII", "XII", "Alpha", "Zero",
+  "Sigma", "Epsilon", "X", "Core", "Null", "III",
+];
+
+function getLocationName(index: number): string {
+  const rand = mulberry32(index * 7919 + 13);
+  const p = LOCATION_PREFIXES[Math.floor(rand() * LOCATION_PREFIXES.length)];
+  const r = LOCATION_ROOTS[Math.floor(rand() * LOCATION_ROOTS.length)];
+  const t = LOCATION_TAILS[Math.floor(rand() * LOCATION_TAILS.length)];
+  return `${p} ${r} ${t}`;
+}
+
+// Hand-curated, astrophotography-inspired palettes — deliberately muted and
+// layered rather than flat saturated "cartoon" colors. Cycles every 8
+// locations; planet placement and the horizon silhouette are separately
+// randomized per location so even a repeated palette still looks distinct.
+interface LocationPalette {
+  sky: [string, string, string, string];
+  nebulaTint: string;
+  planetCore: string;
+  planetEdge: string;
+}
+const LOCATION_PALETTES: LocationPalette[] = [
+  { sky: ["#04050c", "#0a1024", "#131b3d", "#1c2550"], nebulaTint: "90,70,160", planetCore: "#cfd8e8", planetEdge: "#3a4468" },
+  { sky: ["#0d0705", "#24100a", "#3e1810", "#5c2414"], nebulaTint: "200,90,50", planetCore: "#ffd9a8", planetEdge: "#6b2f14" },
+  { sky: ["#030a12", "#082233", "#114058", "#1c5f74"], nebulaTint: "70,180,200", planetCore: "#d8f5ff", planetEdge: "#1c5f74" },
+  { sky: ["#050b06", "#0b1f12", "#14371e", "#1f5029"], nebulaTint: "90,190,110", planetCore: "#d4ffd8", planetEdge: "#1f5029" },
+  { sky: ["#08040f", "#180a28", "#2a1244", "#3d1a5e"], nebulaTint: "170,80,220", planetCore: "#ecd6ff", planetEdge: "#3d1a5e" },
+  { sky: ["#0a0704", "#241708", "#3f2810", "#5c3c18"], nebulaTint: "220,170,70", planetCore: "#fff0c8", planetEdge: "#5c3c18" },
+  { sky: ["#020203", "#0a0a10", "#14141e", "#1e1e2c"], nebulaTint: "120,120,160", planetCore: "#e8e8f0", planetEdge: "#1e1e2c" },
+  { sky: ["#0a0508", "#22101a", "#3a1c2c", "#522a3e"], nebulaTint: "220,130,170", planetCore: "#ffe0ec", planetEdge: "#522a3e" },
+];
+
+interface LocationTheme {
+  index: number;
+  name: string;
+  palette: LocationPalette;
+  planet: { x: number; y: number; r: number; ring: boolean };
+  // A smooth distant-mountain silhouette (sum of a few sine waves, not a
+  // jagged random polyline) sampled into points once and reused every
+  // frame — reads as a real horizon instead of noise.
+  horizon: { x: number; y: number }[];
+}
+
+function getLocationTheme(index: number, width: number, height: number): LocationTheme {
+  const rand = mulberry32(index * 104729 + 31);
+  const palette = LOCATION_PALETTES[index % LOCATION_PALETTES.length];
+
+  const planet = {
+    x: rand() < 0.5 ? width * (0.08 + rand() * 0.12) : width * (0.8 + rand() * 0.12),
+    y: height * (0.08 + rand() * 0.16),
+    r: 55 + rand() * 65,
+    ring: rand() < 0.35,
+  };
+
+  const amp1 = 18 + rand() * 22;
+  const amp2 = 8 + rand() * 14;
+  const freq1 = 0.006 + rand() * 0.006;
+  const freq2 = 0.015 + rand() * 0.012;
+  const phase1 = rand() * Math.PI * 2;
+  const phase2 = rand() * Math.PI * 2;
+  const baseY = height * (0.82 + rand() * 0.08);
+  const horizon: { x: number; y: number }[] = [];
+  const steps = 24;
+  for (let i = 0; i <= steps; i++) {
+    const x = (width * i) / steps;
+    const y = baseY - Math.sin(x * freq1 + phase1) * amp1 - Math.sin(x * freq2 + phase2) * amp2;
+    horizon.push({ x, y });
+  }
+
+  return { index, name: getLocationName(index), palette, planet, horizon };
+}
+
+// Auto-equip loadout: every 2 locations survived deeper unlocks a tougher
+// plane automatically — no separate equip screen, the loadout is just a
+// function of how far out you've proven you can fly. Capped so numbers stay
+// sane at extreme depth rather than trivializing the game.
+interface LocationPerks {
+  extraLives: number;
+  baseFireInterval: number;
+  startingShieldValue: number;
+  startingRapidFireBonus: number;
+}
+
+function perksForLocation(locationIndex: number): LocationPerks {
+  const tier = Math.min(Math.floor((locationIndex - 1) / 2), 6);
+  return {
+    extraLives: tier,
+    baseFireInterval: Math.max(0.1, 0.18 - tier * 0.012),
+    startingShieldValue: tier * 10,
+    startingRapidFireBonus: tier >= 2 ? 3 : 0,
+  };
+}
+
+// Short human-readable badges for the perks a location grants, shown on its
+// card in the Locations screen so the auto-equip loadout isn't invisible.
+function perkSummary(locationIndex: number): string[] {
+  const p = perksForLocation(locationIndex);
+  const badges: string[] = [];
+  if (p.extraLives > 0) badges.push(`+${p.extraLives} lives`);
+  if (p.baseFireInterval < 0.18) badges.push("faster fire");
+  if (p.startingShieldValue > 0) badges.push("shield head start");
+  if (p.startingRapidFireBonus > 0) badges.push("rapid-fire start");
+  return badges;
+}
 
 // Difficulty grows with the log of the level so early stages ramp up fast
 // while the long tail (toward level 1000 and beyond) keeps climbing but
@@ -228,12 +378,17 @@ function gridFormation(rows: number, cols: number, spacingX: number, spacingY: n
   return offsets;
 }
 
-function makePlayers(width: number, height: number, playerIds: string[]): Player[] {
+function makePlayers(
+  width: number,
+  height: number,
+  playerIds: string[],
+  startingRapidFireBonus: number
+): Player[] {
   const n = playerIds.length;
   return playerIds.map((id, i) => {
     const x = width / 2 + (i - (n - 1) / 2) * 56;
     const y = height - height * 0.16;
-    return { id, x, y, targetX: x, targetY: y, invuln: 2, fireTimer: 0, rapidFireUntil: 0 };
+    return { id, x, y, targetX: x, targetY: y, invuln: 2, fireTimer: 0, rapidFireUntil: startingRapidFireBonus };
   });
 }
 
@@ -253,7 +408,15 @@ function makeInitialState(width: number, height: number, level: number, playerId
       twinklePhase: Math.random() * Math.PI * 2,
     };
   });
-  const nebulaColors = ["120,80,220", "40,140,200", "180,60,140"];
+  const locationTheme = getLocationTheme(locationIndexForLevel(level), width, height);
+  const perks = perksForLocation(locationTheme.index);
+  // A few tonal variations on the location's own tint, rather than
+  // unrelated random colors, so the nebula layer reads as part of the same
+  // scene instead of clashing with it.
+  const tintChannels = locationTheme.palette.nebulaTint.split(",").map(Number);
+  const nebulaColors = [-20, 0, 20].map((delta) =>
+    tintChannels.map((c) => clamp(c + delta, 0, 255)).join(",")
+  );
   const nebulae: Nebula[] = Array.from({ length: 3 }, () => ({
     x: Math.random() * width,
     y: Math.random() * height,
@@ -266,7 +429,7 @@ function makeInitialState(width: number, height: number, level: number, playerId
     height,
     level,
     levelDuration: levelSurviveDuration(level),
-    players: makePlayers(width, height, playerIds),
+    players: makePlayers(width, height, playerIds, perks.startingRapidFireBonus),
     bullets: [],
     missiles: [],
     bombs: [],
@@ -277,6 +440,8 @@ function makeInitialState(width: number, height: number, level: number, playerId
     particles: [],
     stars,
     nebulae,
+    locationTheme,
+    baseFireInterval: perks.baseFireInterval,
     spawnTimer: 0.6,
     shieldTimer: 2 + Math.random() * 2,
     rapidFireTimer: 12 + Math.random() * 6,
@@ -802,16 +967,25 @@ function drawSmartBomb(ctx: CanvasRenderingContext2D, shine: number) {
 
 // A chunky glowing energy bolt rather than a thin spark — reads as a much
 // heavier weapon while staying the same size for collision purposes (the
-// hitbox is still driven by the target's radius, not the bullet's).
-function drawBullet(ctx: CanvasRenderingContext2D) {
+// hitbox is still driven by the target's radius, not the bullet's). Swaps to
+// a green palette while Rapid Fire is active, so the buff reads clearly in
+// the middle of a firefight instead of just being a faster version of the
+// same look.
+function drawBullet(ctx: CanvasRenderingContext2D, rapid: boolean) {
   ctx.save();
+
+  const trailC = rapid ? "80,255,140" : "255,180,80";
+  const trailCEnd = rapid ? "60,255,110" : "255,120,30";
+  const glowC = rapid ? "150,255,170" : "255,205,100";
+  const glowCEnd = rapid ? "70,255,120" : "255,140,40";
+  const strokeC = rapid ? "rgba(30,140,60,0.5)" : "rgba(180,70,10,0.5)";
 
   // Long tapering exhaust trail behind the bolt (it travels toward -y, so
   // the trail extends toward +y) — reads as high-velocity ordnance rather
   // than a plinking spark.
   const trail = ctx.createLinearGradient(0, 6, 0, 22);
-  trail.addColorStop(0, "rgba(255,180,80,0.55)");
-  trail.addColorStop(1, "rgba(255,120,30,0)");
+  trail.addColorStop(0, `rgba(${trailC},0.55)`);
+  trail.addColorStop(1, `rgba(${trailCEnd},0)`);
   ctx.fillStyle = trail;
   ctx.beginPath();
   ctx.moveTo(-2.4, 6);
@@ -821,8 +995,8 @@ function drawBullet(ctx: CanvasRenderingContext2D) {
   ctx.fill();
 
   const glow = ctx.createRadialGradient(0, -3, 1, 0, -3, 16);
-  glow.addColorStop(0, "rgba(255,205,100,0.6)");
-  glow.addColorStop(1, "rgba(255,140,40,0)");
+  glow.addColorStop(0, `rgba(${glowC},0.6)`);
+  glow.addColorStop(1, `rgba(${glowCEnd},0)`);
   ctx.fillStyle = glow;
   ctx.beginPath();
   ctx.ellipse(0, -3, 10, 18, 0, 0, Math.PI * 2);
@@ -830,9 +1004,15 @@ function drawBullet(ctx: CanvasRenderingContext2D) {
 
   const grad = ctx.createLinearGradient(0, -16, 0, 9);
   grad.addColorStop(0, "rgba(255,255,255,1)");
-  grad.addColorStop(0.3, "rgba(255,222,130,1)");
-  grad.addColorStop(0.7, "rgba(255,120,30,0.95)");
-  grad.addColorStop(1, "rgba(255,70,15,0.2)");
+  if (rapid) {
+    grad.addColorStop(0.3, "rgba(190,255,150,1)");
+    grad.addColorStop(0.7, "rgba(50,220,90,0.95)");
+    grad.addColorStop(1, "rgba(20,160,60,0.2)");
+  } else {
+    grad.addColorStop(0.3, "rgba(255,222,130,1)");
+    grad.addColorStop(0.7, "rgba(255,120,30,0.95)");
+    grad.addColorStop(1, "rgba(255,70,15,0.2)");
+  }
   ctx.beginPath();
   ctx.moveTo(0, -16);
   ctx.lineTo(4, -6);
@@ -843,7 +1023,7 @@ function drawBullet(ctx: CanvasRenderingContext2D) {
   ctx.closePath();
   ctx.fillStyle = grad;
   ctx.fill();
-  ctx.strokeStyle = "rgba(180,70,10,0.5)";
+  ctx.strokeStyle = strokeC;
   ctx.lineWidth = 0.6;
   ctx.stroke();
 
@@ -915,6 +1095,17 @@ function readStoredBest(): number {
   }
 }
 
+const UNLOCKED_LEVEL_KEY = "skyfighter-unlocked-level";
+
+function readStoredUnlockedLevel(): number {
+  if (typeof window === "undefined") return 1;
+  try {
+    return Math.max(1, parseInt(window.localStorage.getItem(UNLOCKED_LEVEL_KEY) ?? "1", 10) || 1);
+  } catch {
+    return 1;
+  }
+}
+
 export default function FighterGame() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -983,6 +1174,15 @@ export default function FighterGame() {
   // synced from localStorage in a mount effect below, to avoid a hydration
   // mismatch for returning players whose real best score differs from this.
   const [best, setBest] = useState(0);
+  // Highest level ever survived — persisted to localStorage, this is the
+  // "frontier" location the Locations screen unlocks up to. soloStartLevel
+  // is the level the *next* solo run actually begins at: it defaults to the
+  // frontier but can be pulled back to an earlier, already-unlocked location
+  // for a deliberate replay without losing progress.
+  const [unlockedLevel, setUnlockedLevel] = useState(1);
+  const [soloStartLevel, setSoloStartLevel] = useState(1);
+  const [justUnlockedLocation, setJustUnlockedLocation] = useState<string | null>(null);
+  const [showLocations, setShowLocations] = useState(false);
 
   const [lobbyMode, setLobbyMode] = useState<LobbyMode>("solo");
   const [netRole, setNetRole] = useState<NetRole>("solo");
@@ -1047,10 +1247,21 @@ export default function FighterGame() {
   }, [musicMuted]);
 
   useEffect(() => {
+    if (showLocations) {
+      musicPlayerRef.current?.start(LOCATIONS_MUSIC_TRACK);
+    } else if (statusRef.current === "ready") {
+      musicPlayerRef.current?.stop();
+    }
+  }, [showLocations]);
+
+  useEffect(() => {
     // Reads localStorage after hydration (not in the initial state) so the
     // client's first render matches the server's SSR-safe default.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setBest(readStoredBest());
+    const u = readStoredUnlockedLevel();
+    setUnlockedLevel(u);
+    setSoloStartLevel(u);
   }, []);
 
   useEffect(() => {
@@ -1103,13 +1314,14 @@ export default function FighterGame() {
     scoreRef.current = 0;
     scoresRef.current = playerIds.map(() => 0);
     setScores(scoresRef.current);
-    const total = 3 + (playerIds.length - 1);
+    const perks = perksForLocation(locationIndexForLevel(level));
+    const total = 3 + (playerIds.length - 1) + perks.extraLives;
     setMaxLives(total);
     maxLivesRef.current = total;
     setLives(total);
     livesRef.current = total;
-    setShieldTotal(0);
-    shieldTotalRef.current = 0;
+    setShieldTotal(perks.startingShieldValue);
+    shieldTotalRef.current = perks.startingShieldValue;
     // Set synchronously (not just via the status-syncing effect) so the
     // game-loop closure never reads a stale ref for the one tick between
     // this call and the next React commit.
@@ -1120,7 +1332,8 @@ export default function FighterGame() {
 
   const startSolo = () => {
     isDailyRef.current = false;
-    beginGame("solo", [localIdRef.current]);
+    setJustUnlockedLocation(null);
+    beginGame("solo", [localIdRef.current], soloStartLevel);
   };
 
   const startDaily = () => {
@@ -1501,6 +1714,10 @@ export default function FighterGame() {
       s.level = snap.level;
       s.levelDuration = snap.levelDuration;
       s.elapsed = snap.elapsed;
+      const wantLocation = locationIndexForLevel(snap.level);
+      if (s.locationTheme.index !== wantLocation) {
+        s.locationTheme = getLocationTheme(wantLocation, s.width, s.height);
+      }
       s.players = snap.players.map((np) => {
         const targetX = np.x * scaleX;
         const targetY = np.y * scaleY;
@@ -1545,7 +1762,13 @@ export default function FighterGame() {
         vy: nm.vy,
       }));
       s.bombs = snap.bombs.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: nb.vy, rot: nb.rot }));
-      s.bullets = snap.bullets.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: nb.vy, ownerId: "" }));
+      s.bullets = snap.bullets.map((nb) => ({
+        x: nb.x * scaleX,
+        y: nb.y * scaleY,
+        vy: nb.vy,
+        ownerId: "",
+        rapid: nb.rapid,
+      }));
       s.shields = snap.shields.map((ns) => ({ x: ns.x * scaleX, y: ns.y * scaleY, vy: ns.vy, phase: 0 }));
       s.rapidFires = snap.rapidFires.map((nr) => ({ x: nr.x * scaleX, y: nr.y * scaleY, vy: nr.vy, phase: 0 }));
       s.smartBombs = snap.smartBombs.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: nb.vy, phase: 0 }));
@@ -1611,7 +1834,7 @@ export default function FighterGame() {
           .map((b) => ({ x: round1(b.x), y: round1(b.y), vy: round1(b.vy), rot: round1(b.rot) })),
         bullets: s.bullets
           .slice(0, MAX_SNAPSHOT_ENTITIES)
-          .map((b) => ({ x: round1(b.x), y: round1(b.y), vy: round1(b.vy) })),
+          .map((b) => ({ x: round1(b.x), y: round1(b.y), vy: round1(b.vy), rapid: b.rapid })),
         shields: s.shields
           .slice(0, MAX_SNAPSHOT_ENTITIES)
           .map((sh) => ({ x: round1(sh.x), y: round1(sh.y), vy: round1(sh.vy) })),
@@ -1661,9 +1884,10 @@ export default function FighterGame() {
       for (const pl of s.players) {
         pl.fireTimer -= dt;
         if (pl.fireTimer <= 0) {
-          pl.fireTimer = s.elapsed < pl.rapidFireUntil ? RAPIDFIRE_INTERVAL : 0.18;
-          s.bullets.push({ x: pl.x - 7, y: pl.y - 14, vy: -560, ownerId: pl.id });
-          s.bullets.push({ x: pl.x + 7, y: pl.y - 14, vy: -560, ownerId: pl.id });
+          const rapid = s.elapsed < pl.rapidFireUntil;
+          pl.fireTimer = rapid ? RAPIDFIRE_INTERVAL : s.baseFireInterval;
+          s.bullets.push({ x: pl.x - 7, y: pl.y - 14, vy: -560, ownerId: pl.id, rapid });
+          s.bullets.push({ x: pl.x + 7, y: pl.y - 14, vy: -560, ownerId: pl.id, rapid });
         }
       }
       for (const b of s.bullets) b.y += b.vy * dt;
@@ -2116,6 +2340,21 @@ export default function FighterGame() {
         statusRef.current = "levelcomplete";
         setStatus("levelcomplete");
         musicPlayerRef.current?.stop();
+        if (!isDailyRef.current) {
+          const nextLevel = s.level + 1;
+          const crossedLocation = locationIndexForLevel(nextLevel) > locationIndexForLevel(s.level);
+          setJustUnlockedLocation(crossedLocation ? getLocationName(locationIndexForLevel(nextLevel)) : null);
+          setSoloStartLevel(nextLevel);
+          setUnlockedLevel((u) => {
+            if (nextLevel <= u) return u;
+            try {
+              window.localStorage.setItem(UNLOCKED_LEVEL_KEY, String(nextLevel));
+            } catch {
+              // ignore
+            }
+            return nextLevel;
+          });
+        }
         setBest((b) => {
           const nb = Math.max(b, scoreRef.current);
           try {
@@ -2149,13 +2388,54 @@ export default function FighterGame() {
         timerValueRef.current.textContent = formatTime(Math.max(0, s.levelDuration - s.elapsed));
       }
       const { width, height } = s;
+      const theme = s.locationTheme;
       const sky = c.createLinearGradient(0, 0, 0, height);
-      sky.addColorStop(0, "#05060f");
-      sky.addColorStop(0.45, "#0c1230");
-      sky.addColorStop(0.8, "#181040");
-      sky.addColorStop(1, "#241452");
+      sky.addColorStop(0, theme.palette.sky[0]);
+      sky.addColorStop(0.45, theme.palette.sky[1]);
+      sky.addColorStop(0.8, theme.palette.sky[2]);
+      sky.addColorStop(1, theme.palette.sky[3]);
       c.fillStyle = sky;
       c.fillRect(0, 0, width, height);
+
+      // Distant planet — soft-lit crescent rather than a flat disc, so it
+      // reads as a lit sphere in space instead of a cartoon circle.
+      const { planet } = theme;
+      const glowR = c.createRadialGradient(planet.x, planet.y, planet.r * 0.7, planet.x, planet.y, planet.r * 1.6);
+      glowR.addColorStop(0, `${theme.palette.planetEdge}55`);
+      glowR.addColorStop(1, `${theme.palette.planetEdge}00`);
+      c.fillStyle = glowR;
+      c.beginPath();
+      c.arc(planet.x, planet.y, planet.r * 1.6, 0, Math.PI * 2);
+      c.fill();
+
+      if (planet.ring) {
+        c.save();
+        c.translate(planet.x, planet.y);
+        c.rotate(-0.35);
+        c.scale(1, 0.28);
+        c.beginPath();
+        c.arc(0, 0, planet.r * 1.55, 0, Math.PI * 2);
+        c.strokeStyle = `${theme.palette.planetCore}66`;
+        c.lineWidth = planet.r * 0.1;
+        c.stroke();
+        c.restore();
+      }
+
+      const bodyGrad = c.createRadialGradient(
+        planet.x - planet.r * 0.35,
+        planet.y - planet.r * 0.35,
+        planet.r * 0.1,
+        planet.x,
+        planet.y,
+        planet.r
+      );
+      bodyGrad.addColorStop(0, theme.palette.planetCore);
+      bodyGrad.addColorStop(0.55, theme.palette.planetEdge);
+      bodyGrad.addColorStop(1, "#000000");
+      c.fillStyle = bodyGrad;
+      c.beginPath();
+      c.arc(planet.x, planet.y, planet.r, 0, Math.PI * 2);
+      c.fill();
 
       for (const nb of s.nebulae) {
         const glow = c.createRadialGradient(nb.x, nb.y, 0, nb.x, nb.y, nb.r);
@@ -2173,6 +2453,32 @@ export default function FighterGame() {
         drawStar(c, st.x, st.y, st.r, st.opacity * twinkle);
       }
       c.restore();
+
+      // Distant horizon silhouette — a smooth skyline (precomputed once per
+      // location, not regenerated per frame) rather than a jagged random
+      // shape, with a soft rim-light along the ridge for atmosphere.
+      const horizon = theme.horizon;
+      if (horizon.length > 1) {
+        c.save();
+        c.beginPath();
+        c.moveTo(horizon[0].x, height);
+        for (const pt of horizon) c.lineTo(pt.x, pt.y);
+        c.lineTo(horizon[horizon.length - 1].x, height);
+        c.closePath();
+        const silGrad = c.createLinearGradient(0, horizon[0].y - 20, 0, height);
+        silGrad.addColorStop(0, "#000000cc");
+        silGrad.addColorStop(1, "#000000ee");
+        c.fillStyle = silGrad;
+        c.fill();
+
+        c.beginPath();
+        c.moveTo(horizon[0].x, horizon[0].y);
+        for (const pt of horizon) c.lineTo(pt.x, pt.y);
+        c.strokeStyle = `${theme.palette.planetEdge}99`;
+        c.lineWidth = 1.5;
+        c.stroke();
+        c.restore();
+      }
 
       // missiles
       for (const m of s.missiles) {
@@ -2221,7 +2527,7 @@ export default function FighterGame() {
       for (const b of s.bullets) {
         c.save();
         c.translate(b.x, b.y);
-        drawBullet(c);
+        drawBullet(c, b.rapid);
         c.restore();
       }
 
@@ -2298,6 +2604,14 @@ export default function FighterGame() {
 
   const isAlly = netRole === "ally";
 
+  // Locations screen: shows every unlocked location up to the frontier, plus
+  // one locked teaser beyond it, most-recent first. Capped to the last 24 so
+  // an extremely deep run doesn't render an unbounded list.
+  const frontierLocation = locationIndexForLevel(unlockedLevel);
+  const locationsListStart = Math.max(1, frontierLocation - 23);
+  const locationIndices: number[] = [];
+  for (let i = frontierLocation + 1; i >= locationsListStart; i--) locationIndices.push(i);
+
   return (
     <div
       ref={containerRef}
@@ -2354,7 +2668,92 @@ export default function FighterGame() {
         </div>
       </div>
 
-      {status === "ready" && (
+      {status === "ready" && showLocations && (
+        <div className="absolute inset-0 z-20 flex flex-col bg-[#05060c] text-white font-sans">
+          <div className="flex items-center justify-between px-5 pt-6 pb-3">
+            <div>
+              <h2 className="text-xl font-extrabold tracking-tight">Locations</h2>
+              <p className="text-[11px] text-white/50">Tap an unlocked location to start your next run there.</p>
+            </div>
+            <button
+              onClick={() => setShowLocations(false)}
+              aria-label="Close"
+              className="rounded-full bg-white/10 px-3 py-1.5 text-sm font-semibold active:scale-95 transition-transform"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto px-4 pb-6">
+            <div className="flex flex-col gap-2.5">
+              {locationIndices.map((idx) => {
+                const locked = idx > frontierLocation;
+                const palette = LOCATION_PALETTES[idx % LOCATION_PALETTES.length];
+                const startLevel = (idx - 1) * 3 + 1;
+                const endLevel = startLevel + 2;
+                const isFrontier = idx === frontierLocation;
+                const isSelected = idx === locationIndexForLevel(soloStartLevel);
+                const badges = perkSummary(idx);
+                return (
+                  <button
+                    key={idx}
+                    disabled={locked}
+                    onClick={() => {
+                      setSoloStartLevel(startLevel);
+                      setShowLocations(false);
+                    }}
+                    className={`relative overflow-hidden rounded-2xl px-4 py-3.5 text-left transition-transform ${
+                      locked ? "opacity-45" : "active:scale-[0.98]"
+                    } ${isSelected ? "ring-2 ring-blue-400" : ""}`}
+                    style={{
+                      background: `linear-gradient(135deg, ${palette.sky[1]}, ${palette.sky[3]})`,
+                    }}
+                  >
+                    <div className="flex items-center gap-3">
+                      <span
+                        className="h-9 w-9 shrink-0 rounded-full"
+                        style={{
+                          background: `radial-gradient(circle at 35% 30%, ${palette.planetCore}, ${palette.planetEdge} 70%, #000 100%)`,
+                          boxShadow: `0 0 14px 2px ${palette.planetEdge}88`,
+                        }}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate text-sm font-bold">
+                            {locked ? "???" : getLocationName(idx)}
+                          </span>
+                          {locked && <span className="text-xs">🔒</span>}
+                          {isFrontier && !locked && (
+                            <span className="rounded-full bg-emerald-500/80 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide">
+                              Frontier
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-[11px] text-white/70">
+                          {locked ? `Reach Level ${startLevel} to unlock` : `Levels ${startLevel}–${endLevel}`}
+                        </div>
+                        {!locked && badges.length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {badges.map((b) => (
+                              <span
+                                key={b}
+                                className="rounded-full bg-black/30 px-1.5 py-0.5 text-[9px] text-white/85"
+                              >
+                                {b}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {status === "ready" && !showLocations && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 overflow-y-auto bg-black/55 px-6 py-8 text-center text-white font-sans">
           <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight">Sky Raider</h1>
           <p className="max-w-xs text-sm sm:text-base text-white/80">
@@ -2381,6 +2780,19 @@ export default function FighterGame() {
               </button>
             ))}
           </div>
+
+          {lobbyMode === "solo" && (
+            <button
+              onClick={() => setShowLocations(true)}
+              className="flex w-64 flex-col items-center gap-0.5 rounded-xl bg-white/10 px-4 py-2.5 active:scale-95 transition-transform"
+            >
+              <span className="text-[10px] uppercase tracking-wide text-white/50">Starting Location</span>
+              <span className="text-sm font-bold">
+                🌌 {getLocationName(locationIndexForLevel(soloStartLevel))}
+              </span>
+              <span className="text-[11px] text-white/60">Level {soloStartLevel} · tap to browse</span>
+            </button>
+          )}
 
           {lobbyMode === "daily" && (
             <div className="flex w-64 flex-col items-center gap-1.5 rounded-xl bg-white/10 px-4 py-3">
@@ -2499,6 +2911,11 @@ export default function FighterGame() {
       {status === "levelcomplete" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/65 px-6 text-center text-white font-sans">
           <h2 className="text-3xl font-extrabold">You Survived!</h2>
+          {justUnlockedLocation && (
+            <p className="text-sm font-semibold text-emerald-300">
+              🔓 New location unlocked: {justUnlockedLocation}
+            </p>
+          )}
           <p className="text-lg">
             Your Score: <span className="font-bold">{score.toLocaleString()}</span>
           </p>
