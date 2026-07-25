@@ -1613,14 +1613,14 @@ export default function FighterGame() {
           </div>
         )}
         <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm text-center">
+          <div className="text-xs uppercase tracking-wide text-white/60">Best</div>
+          <div className="text-lg font-bold tabular-nums leading-tight">{best}</div>
+        </div>
+        <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm text-center">
           <div className="text-xs uppercase tracking-wide text-white/60">Time</div>
           <div ref={timerValueRef} className="text-lg font-bold tabular-nums leading-tight">
             0:00
           </div>
-        </div>
-        <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm text-center">
-          <div className="text-xs uppercase tracking-wide text-white/60">Cash</div>
-          <div className="text-lg font-bold tabular-nums leading-tight text-amber-300">${cashTotal}</div>
         </div>
         <div className="flex gap-1.5 rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
           {Array.from({ length: maxLives }, (_, i) => (
@@ -1779,7 +1779,7 @@ export default function FighterGame() {
               <span className="font-semibold text-white">{scores[1] ?? 0}</span>
             </p>
           )}
-          <p className="text-sm text-white/70">Best: {best}</p>
+          <p className="text-sm text-white/70">Your Best Score: {best}</p>
           {isAlly ? (
             <p className="text-sm text-white/70">Waiting for host…</p>
           ) : (
@@ -1807,7 +1807,7 @@ export default function FighterGame() {
           <p className="text-lg">
             Score: <span className="font-bold">{score}</span>
           </p>
-          <p className="text-sm text-white/70">Best: {best}</p>
+          <p className="text-sm text-white/70">Your Best Score: {best}</p>
           <button
             onClick={backToMenu}
             className="mt-1 rounded-full bg-white/20 px-6 py-2.5 text-sm font-semibold"
