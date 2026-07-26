@@ -1664,8 +1664,18 @@ export default function FighterGame() {
             // chance to actually accumulate motion between arrivals instead
             // of being reset back to the same stale values every frame.
             if (latestSnapshotRef.current && latestSnapshotRef.current !== appliedSnapshotRef.current) {
+              const prevSnap = appliedSnapshotRef.current;
               applySnapshot(s, latestSnapshotRef.current);
               appliedSnapshotRef.current = latestSnapshotRef.current;
+              // No extra network messages for this -- score and shieldTotal
+              // are already part of every broadcast snapshot, so a rise in
+              // either since the last one we applied is a free, zero-latency
+              // signal that a kill/pickup happened, without needing the
+              // ally to run the host's simulation.
+              if (prevSnap) {
+                if (latestSnapshotRef.current.score > prevSnap.score) playEnemyHitSound();
+                if (latestSnapshotRef.current.shieldTotal > prevSnap.shieldTotal) playShieldPickupSound();
+              }
             }
             extrapolateAlly(s, dt);
 
@@ -2351,6 +2361,7 @@ export default function FighterGame() {
               setScores([...scoresRef.current]);
               scoreRef.current = scoresRef.current.reduce((sum, v) => sum + (v ?? 0), 0);
               setScore(scoreRef.current);
+              playEnemyHitSound();
             }
             s.smartBombs = s.smartBombs.filter((s2) => s2 !== sb);
             break;
