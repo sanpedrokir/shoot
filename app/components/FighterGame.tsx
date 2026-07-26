@@ -22,6 +22,7 @@ import {
   playRapidFireSound,
   playSmartBombPickupSound,
   playBossRoarSound,
+  playSelectSound,
   primeAudioContext,
 } from "../lib/sfx";
 import {
@@ -2645,18 +2646,21 @@ export default function FighterGame() {
         }
       }
 
-      // Boss: with 25 seconds left on the clock, every regular enemy is
+      // Boss: with 45 seconds left on the clock, every regular enemy is
       // cleared out and a single massive "monster" plane takes their place —
       // fixed in one spot (no drift/orbit at all), so it's a clean, focused
       // shooting gallery rather than something that has to be chased or that
-      // gets lost in a crowd of other planes. It takes many hits instead of
-      // one (bullet damage decrements hp in the collision pass below), fires
-      // far more aggressively than a regular enemy, and stays until the
-      // player brings it down or time runs out (no respawn if it's
-      // destroyed early — that's the reward for doing it). Every player
-      // gets a firepower boost the moment it arrives (see bossActive above)
-      // so it's a real fight, not a stalemate.
-      if (!s.bossSpawned && timeLeft <= 25) {
+      // gets lost in a crowd of other planes. Levels run 3-5 minutes, so a
+      // 45s window is a meatier finale than the original 25s -- enough time
+      // to actually make use of a loadout switch or two (see the "change
+      // loadout" HUD button) rather than a blink-and-it's-over ending. It
+      // takes many hits instead of one (bullet damage decrements hp in the
+      // collision pass below), fires far more aggressively than a regular
+      // enemy, and stays until the player brings it down or time runs out
+      // (no respawn if it's destroyed early -- that's the reward for doing
+      // it). Every player gets a firepower boost the moment it arrives (see
+      // bossActive above) so it's a real fight, not a stalemate.
+      if (!s.bossSpawned && timeLeft <= 45) {
         s.bossSpawned = true;
         s.enemies = [];
         // Tuned against the player's actual sustained boss-fight dps (the
@@ -2665,7 +2669,8 @@ export default function FighterGame() {
         // exactly the "too easy" problem this was retuned to fix). At the
         // best loadout's ~70-75 dps this aims for a real multi-second duel
         // (roughly 10-17s depending on level/loadout/accuracy) instead of
-        // an instant kill, with room to spare before the 25s window closes.
+        // an instant kill, with plenty of room to spare before the 45s
+        // window closes.
         // The difficulty term is deliberately the steepest lever here (vs.
         // co-op's flatter +700/player) so depth is what actually makes the
         // fight harder to finish, on top of it also firing faster (see the
@@ -2691,6 +2696,7 @@ export default function FighterGame() {
         setBossChoiceVisible(true);
         setBossFightActive(true);
         playBossRoarSound();
+        playPageFlipSound();
       }
 
       for (const en of s.enemies) {
@@ -3737,7 +3743,10 @@ export default function FighterGame() {
           )}
           {bossFightActive && !isAlly && status === "playing" && (
             <button
-              onClick={() => setBossChoiceVisible(true)}
+              onClick={() => {
+                setBossChoiceVisible(true);
+                playPageFlipSound();
+              }}
               aria-label="Change boss firepower loadout"
               className="pointer-events-auto rounded-lg bg-black/35 px-2.5 py-1.5 text-lg leading-none backdrop-blur-sm active:scale-95 transition-transform"
             >
@@ -3788,6 +3797,16 @@ export default function FighterGame() {
                     onClick={() => {
                       bossLoadoutRef.current = id;
                       setBossChoiceVisible(false);
+                      playSelectSound();
+                      // A brief invulnerability window so glancing at the
+                      // menu to pick/switch a loadout mid-fight isn't itself
+                      // a liability -- covers the whole team, not just
+                      // whoever tapped, since the choice affects the fight
+                      // for everyone.
+                      const s = stateRef.current;
+                      if (s) {
+                        for (const pl of s.players) pl.invuln = Math.max(pl.invuln, 1);
+                      }
                     }}
                     className="flex w-20 flex-col items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2 py-2 text-center active:scale-95 transition-transform hover:bg-white/10"
                   >

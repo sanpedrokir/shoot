@@ -261,3 +261,32 @@ export function playBossRoarSound() {
     // Sound is a nice-to-have — never let it block gameplay.
   }
 }
+
+// A crisp two-note ascending confirm blip for picking a boss firepower
+// loadout -- short and punchy (triangle wave, not the sine chime shields
+// use) so it reads as "equipped" rather than "collected".
+export function playSelectSound() {
+  const audioCtx = getContext();
+  if (!audioCtx) return;
+  try {
+    const now = audioCtx.currentTime;
+    const notes = [520, 780];
+    notes.forEach((freq, i) => {
+      const start = now + i * 0.06;
+      const duration = 0.09;
+      const osc = audioCtx.createOscillator();
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(freq, start);
+      const gain = audioCtx.createGain();
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(0.28, start + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + duration);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(start);
+      osc.stop(start + duration);
+    });
+  } catch {
+    // Sound is a nice-to-have — never let it block gameplay.
+  }
+}
