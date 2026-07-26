@@ -3710,8 +3710,13 @@ export default function FighterGame() {
               <div className="text-xs uppercase tracking-wide text-white/60">Score</div>
               <div className="text-lg font-bold tabular-nums leading-tight">{score}</div>
               {lobbyMode === "solo" && (
-                <div className="max-w-[8rem] truncate text-[10px] text-white/50">
-                  📍 {getLocationName(locationIndexForLevel(soloStartLevel))} · Lv {soloStartLevel}
+                <div className="mt-0.5 flex items-center gap-1">
+                  <span className="rounded bg-sky-500/30 px-1.5 py-0.5 text-xs font-extrabold leading-tight text-sky-200">
+                    Lvl{soloStartLevel}
+                  </span>
+                  <span className="max-w-[6rem] truncate text-[10px] text-white/50">
+                    {getLocationName(locationIndexForLevel(soloStartLevel))}
+                  </span>
                 </div>
               )}
             </div>
