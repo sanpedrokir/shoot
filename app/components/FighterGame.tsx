@@ -3295,7 +3295,9 @@ export default function FighterGame() {
 
           {lobbyMode === "join" && (
             <div className="flex flex-col items-center gap-2 rounded-xl bg-white/10 px-4 py-3">
-              <p className="text-xs text-white/60">Enter your host&apos;s 3-digit room code</p>
+              <p className="max-w-[16rem] text-center text-xl font-bold text-violet-300 font-[family-name:var(--font-game)]">
+                Enter the 3-digit code to join game!
+              </p>
               <input
                 value={joinCodeInput}
                 onChange={(e) => setJoinCodeInput(e.target.value.replace(/\D/g, "").slice(0, 3))}
