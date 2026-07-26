@@ -187,16 +187,50 @@ const RAPIDFIRE_HIT_RADIUS = 18;
 // Normal fire interval is 0.18s; rapid fire roughly triples the rate for a
 // limited window rather than being a permanent upgrade.
 const RAPIDFIRE_INTERVAL = 0.06;
-// Even faster than a normal Rapid Fire buff, and applied automatically
-// (on top of whichever buff a player already has) for as long as the boss
-// is alive -- it needs to feel genuinely killable within its ~15 second
-// window, not just "a bit more fire" on top of a boss with a lot of hp.
-const BOSS_FIRE_INTERVAL = 0.045;
-// The heavy "missile" bolt each player also fires while a boss is alive —
-// much slower than either fire rate above, but each one takes a big chunk
-// out of the boss's hp (see MISSILE_BOLT_DAMAGE at the collision pass).
-const MISSILE_BOLT_INTERVAL = 0.5;
-const MISSILE_BOLT_DAMAGE = 8;
+// Three player firepower loadouts, offered as a choice the moment the boss
+// spawns (see bossChoiceVisible) -- each trades off differently, but all
+// are tuned to feel genuinely killable within the boss's ~15 second window
+// given sustained, reasonably accurate fire, not just "a bit more fire" on
+// top of a boss with a lot of hp.
+type BossLoadoutId = "rapid" | "missiles" | "precision";
+interface BossLoadout {
+  label: string;
+  icon: string;
+  description: string;
+  fireInterval: number; // regular bullet cadence while a boss is alive
+  missileInterval: number; // heavy bolt cadence
+  missileDamage: number;
+  bulletDamage: number; // regular bullet damage against the boss specifically
+}
+const BOSS_LOADOUTS: Record<BossLoadoutId, BossLoadout> = {
+  rapid: {
+    label: "Rapid Barrage",
+    icon: "🔫",
+    description: "Fastest regular fire rate",
+    fireInterval: 0.045,
+    missileInterval: 0.5,
+    missileDamage: 8,
+    bulletDamage: 1,
+  },
+  missiles: {
+    label: "Missile Storm",
+    icon: "🚀",
+    description: "Slower guns, much faster heavy missiles",
+    fireInterval: 0.09,
+    missileInterval: 0.25,
+    missileDamage: 8,
+    bulletDamage: 1,
+  },
+  precision: {
+    label: "Precision Cannons",
+    icon: "🎯",
+    description: "Moderate fire rate, double damage per shot",
+    fireInterval: 0.07,
+    missileInterval: 0.5,
+    missileDamage: 8,
+    bulletDamage: 2,
+  },
+};
 const RAPIDFIRE_DURATION = 8;
 
 const SMARTBOMB_HIT_RADIUS = 18;
@@ -1455,6 +1489,16 @@ export default function FighterGame() {
   // fire it on the next frame.
   const [ultimateCharge, setUltimateCharge] = useState(0);
   const ultimateTriggerRef = useRef(false);
+  // Which of the 3 boss firepower loadouts is currently active (see
+  // BOSS_LOADOUTS) -- read by the fire loop while a boss is alive, chosen
+  // (or auto-picked if the player ignores the prompt) each time one spawns.
+  const bossLoadoutRef = useRef<BossLoadoutId>("rapid");
+  const [bossChoiceVisible, setBossChoiceVisible] = useState(false);
+  useEffect(() => {
+    if (!bossChoiceVisible) return;
+    const t = setTimeout(() => setBossChoiceVisible(false), 6000);
+    return () => clearTimeout(t);
+  }, [bossChoiceVisible]);
   const [achievementToast, setAchievementToast] = useState<Achievement | null>(null);
   useEffect(() => {
     if (!achievementToast) return;
@@ -2412,12 +2456,13 @@ export default function FighterGame() {
       // auto-fire, one volley per player — faster while a Rapid Fire buff
       // is active.
       const bossActive = s.enemies.some((e) => e.isBoss);
+      const bossLoadout = BOSS_LOADOUTS[bossLoadoutRef.current];
       for (const pl of s.players) {
         if (pl.id === s.downedPlayerId) continue;
         pl.fireTimer -= dt;
         if (pl.fireTimer <= 0) {
           const rapid = bossActive || s.elapsed < pl.rapidFireUntil;
-          pl.fireTimer = bossActive ? BOSS_FIRE_INTERVAL : rapid ? RAPIDFIRE_INTERVAL : s.baseFireInterval;
+          pl.fireTimer = bossActive ? bossLoadout.fireInterval : rapid ? RAPIDFIRE_INTERVAL : s.baseFireInterval;
           s.bullets.push({ x: pl.x - 7, y: pl.y - 14, vy: -560, ownerId: pl.id, rapid });
           s.bullets.push({ x: pl.x + 7, y: pl.y - 14, vy: -560, ownerId: pl.id, rapid });
         }
@@ -2427,7 +2472,7 @@ export default function FighterGame() {
         if (bossActive) {
           pl.missileTimer -= dt;
           if (pl.missileTimer <= 0) {
-            pl.missileTimer = MISSILE_BOLT_INTERVAL;
+            pl.missileTimer = bossLoadout.missileInterval;
             s.bullets.push({ x: pl.x, y: pl.y - 16, vy: -420, ownerId: pl.id, rapid: true, heavy: true });
           }
         } else {
@@ -2572,10 +2617,12 @@ export default function FighterGame() {
         s.enemies = [];
         // Tuned for the boosted fire rate + heavy missile bonus above to
         // bring it down over several seconds of sustained, accurate fire —
-        // a tense duel, not an instant kill or a stalemate. Scaled up from
-        // the original 10-second-window tuning since the fight now runs
-        // 15 seconds.
-        const maxHp = 95 + extraPlayers * 40 + Math.floor(difficulty * 4);
+        // a tense duel, not an instant kill or a stalemate. The difficulty
+        // term is deliberately the steepest lever here (vs. co-op's flatter
+        // +40/player) so depth is what actually makes the fight harder to
+        // finish, on top of it also firing faster (see the fire/bomb timer
+        // formulas above).
+        const maxHp = 95 + extraPlayers * 40 + Math.floor(difficulty * 7);
         s.enemies.push({
           x: s.width / 2,
           y: s.height * 0.24,
@@ -2589,6 +2636,11 @@ export default function FighterGame() {
           hp: maxHp,
           maxHp,
         });
+        // Reset to the default loadout and let the player pick a firepower
+        // option for this fight -- if they ignore the prompt it auto-hides
+        // (see the bossChoiceVisible effect) and "rapid" just keeps firing.
+        bossLoadoutRef.current = "rapid";
+        setBossChoiceVisible(true);
       }
 
       for (const en of s.enemies) {
@@ -2621,7 +2673,7 @@ export default function FighterGame() {
         en.fireTimer -= dt;
         if (en.fireTimer <= 0 && en.y > 10 && en.y < s.height - 60 && s.players.length > 0) {
           en.fireTimer = en.isBoss
-            ? 0.35 + Math.random() * 0.25
+            ? clamp(0.42 - difficulty * 0.018, 0.16, 0.42) + Math.random() * 0.22
             : clamp(2.2 - difficulty * 0.3, 0.6, 2.2) + Math.random() * 1.6;
           let nearest = s.players[0];
           let nearestD = dist2(en.x, en.y, nearest.x, nearest.y);
@@ -2656,7 +2708,7 @@ export default function FighterGame() {
           // the plane bonus above, so there's a real rest window between
           // the two rather than either always being at least partway on).
           en.bombTimer = en.isBoss
-            ? 0.7 + Math.random() * 0.6
+            ? clamp(0.85 - difficulty * 0.025, 0.35, 0.85) + Math.random() * 0.5
             : clamp(2.8 - difficulty * 0.35 - bombFocus * 1.8 - extraPlayers * coopBonusIntensity(bombFocus) * 1.8, 0.3, 2.8) +
               Math.random() * 2.4;
           // Timer still resets on schedule during the post-wave suppression
@@ -2773,7 +2825,8 @@ export default function FighterGame() {
             deadBullets.add(b);
             const idx = s.players.findIndex((p) => p.id === b.ownerId);
             if (en.hp !== undefined) {
-              const damage = b.heavy ? MISSILE_BOLT_DAMAGE : 1;
+              const loadout = BOSS_LOADOUTS[bossLoadoutRef.current];
+              const damage = b.heavy ? loadout.missileDamage : en.isBoss ? loadout.bulletDamage : 1;
               en.hp -= damage;
               spawnExplosion(s.particles, b.x, b.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], b.heavy ? 12 : 4);
               if (idx >= 0) {
@@ -3604,6 +3657,35 @@ export default function FighterGame() {
           </button>
         </div>
       </div>
+
+      {bossChoiceVisible && status === "playing" && (
+        <div className="pointer-events-none absolute inset-x-0 top-16 z-50 flex justify-center px-4 font-sans">
+          <div className="pointer-events-auto flex flex-col items-center gap-2 rounded-xl border border-red-400/40 bg-black/85 px-4 py-3 shadow-lg shadow-black/40">
+            <div className="text-xs font-bold uppercase tracking-wide text-red-300/90">
+              Boss Firepower — Choose One
+            </div>
+            <div className="flex gap-2">
+              {(Object.keys(BOSS_LOADOUTS) as BossLoadoutId[]).map((id) => {
+                const opt = BOSS_LOADOUTS[id];
+                return (
+                  <button
+                    key={id}
+                    onClick={() => {
+                      bossLoadoutRef.current = id;
+                      setBossChoiceVisible(false);
+                    }}
+                    className="flex w-24 flex-col items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2 py-2 text-center active:scale-95 transition-transform hover:bg-white/10"
+                  >
+                    <span className="text-xl leading-none">{opt.icon}</span>
+                    <div className="text-[11px] font-bold leading-tight text-white">{opt.label}</div>
+                    <div className="text-[9px] leading-tight text-white/60">{opt.description}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {achievementToast && (
         <div className="pointer-events-none absolute inset-x-0 top-16 z-50 flex justify-center px-6 font-sans">
