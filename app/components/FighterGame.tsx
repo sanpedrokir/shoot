@@ -19,6 +19,7 @@ import {
   playEnemyHitSound,
   playShieldPickupSound,
   playRapidFireSound,
+  playSmartBombPickupSound,
   primeAudioContext,
 } from "../lib/sfx";
 import AuthPanel, { type AuthUser, type AuthPanelHandle, type LeaderboardTop } from "./AuthPanel";
@@ -370,8 +371,14 @@ function catmullRomPath(points: { x: number; y: number }[]): string {
 // Difficulty grows with the log of the level so early stages ramp up fast
 // while the long tail (toward level 1000 and beyond) keeps climbing but
 // never explodes.
+// Log growth alone (the original curve) flattens out fast -- past the first
+// few levels it barely moves, so a long campaign stopped feeling like it was
+// climbing. From level 10 on, an added linear term keeps the ramp visibly
+// spreading out deeper into the game instead of plateauing.
 function levelDifficulty(level: number) {
-  return Math.log2(level + 1) * 0.85;
+  const base = Math.log2(level + 1) * 0.85;
+  if (level <= 9) return base;
+  return base + (level - 9) * 0.12;
 }
 
 // On top of level difficulty, a single playthrough gets tougher the longer
@@ -402,6 +409,16 @@ const PHASE_PERIOD = 45;
 function phaseFocus(elapsed: number) {
   const wave = Math.sin((elapsed / PHASE_PERIOD) * Math.PI * 2);
   return { bombFocus: Math.max(0, wave), swarmFocus: Math.max(0, -wave) };
+}
+
+// Widens the dead zone around each phase crossing into a real breather —
+// used only for co-op's *extra* bomb/plane bonus on top of the base
+// difficulty above, so a two-player game gets an actual lull between the
+// bomb-heavy and plane-heavy stretches instead of the bonus always being at
+// least partway on. Solo pacing (which reads bombFocus/swarmFocus directly)
+// is untouched by this.
+function coopBonusIntensity(focus: number) {
+  return clamp((focus - 0.3) / 0.7, 0, 1);
 }
 
 // How long a level requires surviving to clear it: level 1 is a full 3
@@ -2101,16 +2118,22 @@ export default function FighterGame() {
       if (s.spawnTimer <= 0 && (!s.finalWaveSpawned || finalePush)) {
         s.spawnTimer =
           (clamp(1.6 - difficulty * 0.5 - swarmFocus * 0.3, 0.45, 1.6) + Math.random() * 0.3) /
-          (1 + extraPlayers * 0.2) /
+          (1 + extraPlayers * 0.35) /
           (finalePush ? 2.4 : 1);
         // Every burst is at least a pair so the wedge formation always reads
-        // as a squadron arriving together — plus three extra enemies per
-        // teammate beyond the first (so co-op sees a noticeably bigger
-        // squadron than solo, not just one plane more), plus a little more
-        // on top during the peak of a squadron-swarm phase, plus a final
+        // as a squadron arriving together — plus up to five extra enemies
+        // per teammate beyond the first, scaled by the *shaped* swarm focus
+        // (zero during the rest window around each phase crossing, ramping
+        // to 5 at the true peak) so co-op gets a real breather between the
+        // plane-heavy and bomb-heavy (see the bomb-timer bonus above)
+        // stretches instead of constant elevated pressure. Also a
+        // level-scaled bonus so deep runs get visibly bigger squadrons and
+        // not just a spawn timer that's already hit its floor, plus a final
         // couple more once the last 8 seconds kick in.
         const extraSwarm = Math.min(1, Math.floor(swarmFocus * 2.2));
-        const count = 2 + extraPlayers * 3 + extraSwarm + (finalePush ? 2 : 0);
+        const difficultySwarm = Math.floor(difficulty / 2.5);
+        const coopPlaneBonus = Math.round(extraPlayers * coopBonusIntensity(swarmFocus) * 5);
+        const count = 2 + coopPlaneBonus + extraSwarm + difficultySwarm + (finalePush ? 2 : 0);
         const spacing = 34;
         const offsets = wedgeFormation(count, spacing, 22);
         const maxAbsDx = Math.max(...offsets.map((o) => Math.abs(o.dx)));
@@ -2120,7 +2143,7 @@ export default function FighterGame() {
           s.enemies.push({
             x: clamp(anchorX + offsets[i].dx, 30, s.width - 30),
             y: -30 + offsets[i].dy,
-            vy: 55 + Math.random() * 35 + Math.min(difficulty, 8) * 40 + (finalePush ? 90 : 0),
+            vy: 55 + Math.random() * 35 + Math.min(difficulty, 14) * 40 + (finalePush ? 90 : 0),
             phase: Math.random() * Math.PI * 2,
             amp: 20 + Math.random() * 40,
             scale: 0.85 + Math.random() * 0.35,
@@ -2140,7 +2163,7 @@ export default function FighterGame() {
       if (!s.midpointWaveSpawned && s.elapsed >= s.levelDuration / 2) {
         s.midpointWaveSpawned = true;
         const rows = 3;
-        const cols = 4 + extraPlayers;
+        const cols = 4 + extraPlayers * 2;
         const spacingX = 46;
         const offsets = gridFormation(rows, cols, spacingX, 42);
         const maxAbsDx = Math.max(...offsets.map((o) => Math.abs(o.dx)));
@@ -2150,7 +2173,7 @@ export default function FighterGame() {
           s.enemies.push({
             x: clamp(anchorX + offset.dx, 30, s.width - 30),
             y: -30 + offset.dy,
-            vy: 50 + Math.random() * 30 + Math.min(difficulty, 8) * 35,
+            vy: 50 + Math.random() * 30 + Math.min(difficulty, 14) * 35,
             phase: Math.random() * Math.PI * 2,
             amp: 15 + Math.random() * 25,
             scale: 0.8 + Math.random() * 0.3,
@@ -2161,10 +2184,10 @@ export default function FighterGame() {
         s.bombsSuppressedUntil = s.elapsed + 10;
       }
 
-      // Finale: with 10 seconds left on the clock, a wide gathered band of
-      // enemies arrives near the top of the screen and each one loops
-      // continuously around its own spot in the formation instead of
-      // falling through and off the screen —
+      // Finale: with 8 seconds left on the clock, a wide gathered band of
+      // enemies arrives near the top of the screen and each one hovers
+      // (a slow drifting loop, not a spin) around its own spot in the
+      // formation instead of falling through and off the screen —
       // they stay put (and keep shooting) until the player clears them or
       // time runs out, rather than draining away and leaving nothing to
       // shoot at for the last few seconds. Any slot the player clears out
@@ -2184,16 +2207,19 @@ export default function FighterGame() {
           orbit: {
             cx,
             cy,
-            radius: 12 + Math.random() * 10,
+            // A slow, gentle drift -- reads as a cluster of planes hovering
+            // in place (like clouds) rather than spinning -- that visibly
+            // picks up urgency once finalePush kicks in.
+            radius: 14 + Math.random() * 14,
             angle: Math.random() * Math.PI * 2,
-            speed: (Math.random() < 0.5 ? -1 : 1) * (1.1 + Math.random() * 0.9) * (finalePush ? 1.6 : 1),
+            speed: (Math.random() < 0.5 ? -1 : 1) * (0.5 + Math.random() * 0.5) * (finalePush ? 1.8 : 1),
           },
         });
       };
-      if (!s.finalWaveSpawned && timeLeft <= 10) {
+      if (!s.finalWaveSpawned && timeLeft <= 8) {
         s.finalWaveSpawned = true;
         const rows = 2;
-        const cols = 6 + extraPlayers;
+        const cols = 6 + extraPlayers * 2;
         const spacingX = 54;
         const spacingY = 42;
         const offsets = gridFormation(rows, cols, spacingX, spacingY);
@@ -2253,7 +2279,14 @@ export default function FighterGame() {
         }
         en.bombTimer -= dt;
         if (en.bombTimer <= 0 && en.y > 10 && en.y < s.height - 100) {
-          en.bombTimer = clamp(2.8 - difficulty * 0.35 - bombFocus * 1.8, 0.35, 2.8) + Math.random() * 2.4;
+          // Co-op's extra pressure shouldn't only ever be "more planes" --
+          // during a bomb-focus stretch of the phase cycle, extra teammates
+          // also mean noticeably more bombs falling (shaped the same way as
+          // the plane bonus above, so there's a real rest window between
+          // the two rather than either always being at least partway on).
+          en.bombTimer =
+            clamp(2.8 - difficulty * 0.35 - bombFocus * 1.8 - extraPlayers * coopBonusIntensity(bombFocus) * 1.8, 0.3, 2.8) +
+            Math.random() * 2.4;
           // Timer still resets on schedule during the post-wave suppression
           // window (so bombs don't all pile up and burst the moment it
           // ends) — only the actual drop is held back.
@@ -2437,6 +2470,7 @@ export default function FighterGame() {
           const r = PLAYER_HIT_RADIUS + SMARTBOMB_HIT_RADIUS;
           if (dist2(pl.x, pl.y, sb.x, sb.y) < r * r) {
             spawnExplosion(s.particles, sb.x, sb.y, ["#ffc9b0", "#ff5a3c", "#8a0f0f"], 14);
+            playSmartBombPickupSound();
             const idx = s.players.findIndex((p) => p.id === pl.id);
             if (s.enemies.length > 0) {
               for (const en of s.enemies) {
@@ -2872,7 +2906,7 @@ export default function FighterGame() {
               <div className="text-lg font-bold tabular-nums leading-tight">{score}</div>
               {lobbyMode === "solo" && (
                 <div className="max-w-[8rem] truncate text-[10px] text-white/50">
-                  📍 {getLocationName(locationIndexForLevel(soloStartLevel))}
+                  📍 {getLocationName(locationIndexForLevel(soloStartLevel))} · Lv {soloStartLevel}
                 </div>
               )}
             </div>
@@ -3434,6 +3468,7 @@ export default function FighterGame() {
                 >
                   {justUnlockedLocation}
                 </p>
+                <span className="text-xs font-semibold text-yellow-300/80">Level {soloStartLevel}</span>
               </div>
               <button
                 onClick={() => {

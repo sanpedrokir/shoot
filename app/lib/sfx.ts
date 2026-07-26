@@ -163,3 +163,46 @@ export function playRapidFireSound() {
     // Sound is a nice-to-have — never let it block gameplay.
   }
 }
+
+// A heavy low-to-high power-charge "womp" plus a bright metallic ping for
+// grabbing a Smart Bomb -- distinct from Rapid Fire's brighter sawtooth
+// sweep and the shield's gentle chime, matching how much bigger a "clear
+// the whole screen" weapon feels than either of those.
+export function playSmartBombPickupSound() {
+  const audioCtx = getContext();
+  if (!audioCtx) return;
+  try {
+    const now = audioCtx.currentTime;
+    const duration = 0.32;
+
+    const osc = audioCtx.createOscillator();
+    osc.type = "square";
+    osc.frequency.setValueAtTime(90, now);
+    osc.frequency.linearRampToValueAtTime(220, now + duration);
+
+    const gain = audioCtx.createGain();
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.3, now + 0.03);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + duration);
+
+    const pingStart = now + duration * 0.55;
+    const ping = audioCtx.createOscillator();
+    ping.type = "triangle";
+    ping.frequency.setValueAtTime(1400, pingStart);
+    const pingGain = audioCtx.createGain();
+    pingGain.gain.setValueAtTime(0, pingStart);
+    pingGain.gain.linearRampToValueAtTime(0.2, pingStart + 0.015);
+    pingGain.gain.exponentialRampToValueAtTime(0.001, pingStart + 0.18);
+    ping.connect(pingGain);
+    pingGain.connect(audioCtx.destination);
+    ping.start(pingStart);
+    ping.stop(pingStart + 0.18);
+  } catch {
+    // Sound is a nice-to-have — never let it block gameplay.
+  }
+}
