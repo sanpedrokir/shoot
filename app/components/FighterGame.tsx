@@ -47,11 +47,18 @@ type Enemy = {
   // it's there until the player shoots it down or time runs out, not until
   // it happens to drift off the bottom.
   orbit?: { cx: number; cy: number; radius: number; angle: number; speed: number };
-  // Present only for the boss — takes many hits instead of one, so bullet
-  // damage decrements this instead of destroying it outright.
+  // Present whenever this enemy takes more than one hit -- covers both the
+  // boss and the "tanky"/"elite" regular-enemy variants below. Bullet damage
+  // decrements this instead of destroying the enemy outright; it only dies
+  // once hp reaches 0.
   isBoss?: boolean;
   hp?: number;
   maxHp?: number;
+  // Regular-enemy variety introduced past level ~10: "dodger" actively
+  // steers away from the nearest player's x instead of just sine-swaying,
+  // "tanky" takes 2 hits, "elite" is a bigger one-per-level milestone enemy
+  // that's both. undefined means the original plain enemy.
+  kind?: "dodger" | "tanky" | "elite";
 };
 type Particle = {
   x: number;
@@ -124,8 +131,17 @@ interface GameState {
   // enemies, the bomb lull) purely through the normal snapshot sync.
   midpointWaveSpawned: boolean;
   bombsSuppressedUntil: number;
-  // Same host/solo-only pattern for the final-10-seconds boss.
+  // Same host/solo-only pattern for the final-15-seconds boss.
   bossSpawned: boolean;
+  // Once per level, only on a milestone level (multiple of 5) -- the elite
+  // enemy spawns alongside the midpoint wave.
+  eliteSpawned: boolean;
+  // Screen shake: each client (host, solo, and ally alike) decides locally
+  // when to shake off events it can already observe (a boss kill, a
+  // midpoint wave landing) rather than this being networked -- purely a
+  // render-layer effect, keyed off s.elapsed which is already kept in sync.
+  shakeUntil: number;
+  shakeMagnitude: number;
 }
 
 const PLAYER_RADIUS = 14;
@@ -152,7 +168,7 @@ const RAPIDFIRE_HIT_RADIUS = 18;
 const RAPIDFIRE_INTERVAL = 0.06;
 // Even faster than a normal Rapid Fire buff, and applied automatically
 // (on top of whichever buff a player already has) for as long as the boss
-// is alive -- it needs to feel genuinely killable within its ~10 second
+// is alive -- it needs to feel genuinely killable within its ~15 second
 // window, not just "a bit more fire" on top of a boss with a lot of hp.
 const BOSS_FIRE_INTERVAL = 0.045;
 // The heavy "missile" bolt each player also fires while a boss is alive —
@@ -402,6 +418,19 @@ function levelDifficulty(level: number) {
   return base + (level - 9) * 0.12;
 }
 
+// Enemy variety kicks in from level 10 on: a "dodger" that actively steers
+// away from the nearest player instead of just sine-swaying, and a "tanky"
+// that takes 2 hits. Chance climbs slowly with level and caps out so even a
+// very deep run doesn't become all-variants.
+function rollEnemyKind(level: number): "dodger" | "tanky" | undefined {
+  if (level < 10) return undefined;
+  const p = Math.min(0.35, (level - 10) * 0.01 + 0.15);
+  const roll = Math.random();
+  if (roll < p * 0.5) return "dodger";
+  if (roll < p) return "tanky";
+  return undefined;
+}
+
 // On top of level difficulty, a single playthrough gets tougher the longer
 // you survive. This is a flat step, not a smooth curve: it holds steady for
 // a full minute, then jumps by +0.5% — a continuous log-curve compounded too
@@ -562,7 +591,15 @@ function makeInitialState(width: number, height: number, level: number, playerId
     midpointWaveSpawned: false,
     bombsSuppressedUntil: 0,
     bossSpawned: false,
+    eliteSpawned: false,
+    shakeUntil: 0,
+    shakeMagnitude: 0,
   };
+}
+
+function triggerShake(s: GameState, magnitude: number, duration: number) {
+  s.shakeUntil = s.elapsed + duration;
+  s.shakeMagnitude = magnitude;
 }
 
 function clamp(v: number, lo: number, hi: number) {
@@ -1375,9 +1412,37 @@ export default function FighterGame() {
   // directly, shown only for as long as the menu track isn't actually
   // audible yet.
   const [showSoundPrompt, setShowSoundPrompt] = useState(false);
+  // Brief "Level N — Location Name" title card shown for a couple seconds
+  // whenever a level actually starts (any mode) -- auto-clears itself.
+  const [levelTitleCard, setLevelTitleCard] = useState<{ level: number; location: string } | null>(null);
+  useEffect(() => {
+    if (!levelTitleCard) return;
+    const t = setTimeout(() => setLevelTitleCard(null), 2000);
+    return () => clearTimeout(t);
+  }, [levelTitleCard]);
 
   useEffect(() => {
     localIdRef.current = getClientId();
+  }, []);
+
+  // Detects "a new deploy has shipped since this tab loaded" -- a long-lived
+  // tab otherwise has no reason to ever notice, and keeps running whatever
+  // old code it started with indefinitely. Polls occasionally rather than
+  // on every render; a stale reload prompt a minute late is harmless.
+  const [updateAvailable, setUpdateAvailable] = useState(false);
+  useEffect(() => {
+    const ownBuildId = process.env.NEXT_PUBLIC_BUILD_ID;
+    if (!ownBuildId) return;
+    const check = () => {
+      fetch("/api/version", { cache: "no-store" })
+        .then((r) => r.json())
+        .then((data: { buildId: string }) => {
+          if (data.buildId && data.buildId !== ownBuildId) setUpdateAvailable(true);
+        })
+        .catch(() => {});
+    };
+    const id = setInterval(check, 60000);
+    return () => clearInterval(id);
   }, []);
 
   useEffect(() => {
@@ -1524,6 +1589,7 @@ export default function FighterGame() {
     statusRef.current = "playing";
     setStatus("playing");
     musicPlayerRef.current?.start(role === "solo" ? pickSoloMusicTrack() : COOP_MUSIC_TRACK);
+    setLevelTitleCard({ level, location: getLocationName(locationIndexForLevel(level)) });
   };
 
   const startSolo = (level: number = soloStartLevel) => {
@@ -1804,6 +1870,13 @@ export default function FighterGame() {
                   return prevPl && pl.rapidFireUntil > prevPl.rapidFireUntil;
                 });
                 if (gotRapidFire) playRapidFireSound();
+                // A big score jump in one snapshot interval reads as
+                // something dramatic happening (a boss kill, or a large
+                // simultaneous clear) -- worth a shake on the ally's screen
+                // too, without needing a dedicated network message for it.
+                if (latestSnapshotRef.current.score - prevSnap.score >= 50) {
+                  triggerShake(s, 12, 0.5);
+                }
               }
             }
             extrapolateAlly(s, dt);
@@ -1989,6 +2062,7 @@ export default function FighterGame() {
         isBoss: ne.isBoss,
         hp: ne.hp,
         maxHp: ne.maxHp,
+        kind: ne.kind,
       }));
       s.missiles = snap.missiles.map((nm) => ({
         x: nm.x * scaleX,
@@ -2071,6 +2145,7 @@ export default function FighterGame() {
             isBoss: en.isBoss,
             hp: en.hp,
             maxHp: en.maxHp,
+            kind: en.kind,
           })),
         missiles: s.missiles
           .slice(0, MAX_SNAPSHOT_ENTITIES)
@@ -2196,6 +2271,7 @@ export default function FighterGame() {
           const margin = 30 + maxAbsDx;
           const anchorX = margin + Math.random() * Math.max(1, s.width - margin * 2);
           for (let i = 0; i < offsets.length; i++) {
+            const kind = rollEnemyKind(s.level);
             s.enemies.push({
               x: clamp(anchorX + offsets[i].dx, 30, s.width - 30),
               y: -30 + offsets[i].dy,
@@ -2205,6 +2281,9 @@ export default function FighterGame() {
               scale: 0.85 + Math.random() * 0.35,
               fireTimer: 1.8 + Math.random() * 1.8,
               bombTimer: 1.2 + Math.random() * 2.2,
+              kind,
+              hp: kind === "tanky" ? 2 : undefined,
+              maxHp: kind === "tanky" ? 2 : undefined,
             });
           }
         }
@@ -2219,6 +2298,7 @@ export default function FighterGame() {
       // bomb drops.
       if (!s.midpointWaveSpawned && s.elapsed >= s.levelDuration / 2) {
         s.midpointWaveSpawned = true;
+        triggerShake(s, 5, 0.3);
         const rows = 3;
         const cols = 4 + extraPlayers * 2;
         const spacingX = 46;
@@ -2241,9 +2321,32 @@ export default function FighterGame() {
           });
         }
         s.bombsSuppressedUntil = s.elapsed + 10;
+
+        // Elite: on every 5th level, a single bigger, tougher enemy arrives
+        // alongside the midpoint wave as a milestone moment distinct from
+        // the endgame boss -- still just a regular falling enemy (no orbit,
+        // no special fire pattern), just visibly bigger and a real 5-hit
+        // fight instead of the usual one-shot kill.
+        if (s.level % 5 === 0 && !s.eliteSpawned) {
+          s.eliteSpawned = true;
+          const eliteHp = 5 + Math.floor(difficulty);
+          s.enemies.push({
+            x: s.width / 2,
+            y: -60,
+            vy: 35 + Math.min(difficulty, 14) * 20,
+            phase: Math.random() * Math.PI * 2,
+            amp: 30,
+            scale: 1.8,
+            fireTimer: 1.4,
+            bombTimer: 1.8,
+            kind: "elite",
+            hp: eliteHp,
+            maxHp: eliteHp,
+          });
+        }
       }
 
-      // Boss: with 10 seconds left on the clock, every regular enemy is
+      // Boss: with 15 seconds left on the clock, every regular enemy is
       // cleared out and a single massive "monster" plane takes their place —
       // fixed in one spot (no drift/orbit at all), so it's a clean, focused
       // shooting gallery rather than something that has to be chased or that
@@ -2254,13 +2357,15 @@ export default function FighterGame() {
       // destroyed early — that's the reward for doing it). Every player
       // gets a firepower boost the moment it arrives (see bossActive above)
       // so it's a real fight, not a stalemate.
-      if (!s.bossSpawned && timeLeft <= 10) {
+      if (!s.bossSpawned && timeLeft <= 15) {
         s.bossSpawned = true;
         s.enemies = [];
         // Tuned for the boosted fire rate + heavy missile bonus above to
         // bring it down over several seconds of sustained, accurate fire —
-        // a tense duel, not an instant kill or a stalemate.
-        const maxHp = 70 + extraPlayers * 30 + Math.floor(difficulty * 3);
+        // a tense duel, not an instant kill or a stalemate. Scaled up from
+        // the original 10-second-window tuning since the fight now runs
+        // 15 seconds.
+        const maxHp = 95 + extraPlayers * 40 + Math.floor(difficulty * 4);
         s.enemies.push({
           x: s.width / 2,
           y: s.height * 0.24,
@@ -2281,6 +2386,23 @@ export default function FighterGame() {
           en.orbit.angle += en.orbit.speed * dt;
           en.x = clamp(en.orbit.cx + Math.cos(en.orbit.angle) * en.orbit.radius, 20, s.width - 20);
           en.y = en.orbit.cy + Math.sin(en.orbit.angle) * en.orbit.radius;
+        } else if (en.kind === "dodger" && s.players.length > 0) {
+          // Actively steers away from whichever player is nearest, instead
+          // of just sine-swaying -- reads as evasive rather than random.
+          en.y += en.vy * dt;
+          let nearest = s.players[0];
+          let nearestD = dist2(en.x, en.y, nearest.x, nearest.y);
+          for (const pl of s.players) {
+            const d = dist2(en.x, en.y, pl.x, pl.y);
+            if (d < nearestD) {
+              nearest = pl;
+              nearestD = d;
+            }
+          }
+          const away = en.x - nearest.x;
+          const dodgeDir = away === 0 ? (Math.random() < 0.5 ? -1 : 1) : Math.sign(away);
+          en.phase += dt * 1.6;
+          en.x = clamp(en.x + dodgeDir * 70 * dt + Math.sin(en.phase) * 10 * dt, 20, s.width - 20);
         } else {
           en.y += en.vy * dt;
           en.phase += dt * 1.6;
@@ -2430,27 +2552,31 @@ export default function FighterGame() {
       let scored = false;
       for (const b of s.bullets) {
         for (const en of s.enemies) {
-          // Non-boss enemies still only ever take one hit and are excluded
-          // once dead; the boss is deliberately NOT added to deadEnemies on
-          // a non-lethal hit, so multiple bullets landing in the same frame
-          // all chip its hp instead of only the first one counting.
+          // Single-hit enemies still only ever take one hit and are excluded
+          // once dead; any enemy with an hp value (boss, tanky, elite) is
+          // deliberately NOT added to deadEnemies on a non-lethal hit, so
+          // multiple bullets landing in the same frame all chip its hp
+          // instead of only the first one counting.
           if (deadEnemies.has(en) || deadBullets.has(b)) continue;
           const r = ENEMY_RADIUS * en.scale;
           if (dist2(b.x, b.y, en.x, en.y) < r * r) {
             deadBullets.add(b);
             const idx = s.players.findIndex((p) => p.id === b.ownerId);
-            if (en.isBoss) {
+            if (en.hp !== undefined) {
               const damage = b.heavy ? MISSILE_BOLT_DAMAGE : 1;
-              en.hp = (en.hp ?? 1) - damage;
+              en.hp -= damage;
               spawnExplosion(s.particles, b.x, b.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], b.heavy ? 12 : 4);
               if (idx >= 0) {
-                scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + damage * 2;
+                scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + (en.isBoss ? damage * 2 : 10);
                 scored = true;
               }
               if (en.hp <= 0) {
                 deadEnemies.add(en);
-                spawnExplosion(s.particles, en.x, en.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], 40);
-                if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 100;
+                spawnExplosion(s.particles, en.x, en.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], en.isBoss ? 40 : 16);
+                if (en.isBoss) {
+                  triggerShake(s, 12, 0.5);
+                  if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 100;
+                }
               }
             } else {
               deadEnemies.add(en);
@@ -2550,6 +2676,7 @@ export default function FighterGame() {
                 if (boss.hp <= 0) {
                   s.enemies = [];
                   spawnExplosion(s.particles, boss.x, boss.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], 40);
+                  triggerShake(s, 12, 0.5);
                   if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 100;
                 }
               }
@@ -2685,13 +2812,29 @@ export default function FighterGame() {
       }
       const { width, height } = s;
       const theme = s.locationTheme;
+
+      // Screen shake: a brief, decaying random jitter applied to everything
+      // drawn below via one outer translate, restored at the very end of
+      // this function. The sky fill is drawn oversized so the jitter never
+      // peeks past the canvas edge to reveal the page background behind it.
+      c.save();
+      let shakeX = 0;
+      let shakeY = 0;
+      if (s.elapsed < s.shakeUntil) {
+        const decay = clamp((s.shakeUntil - s.elapsed) * 2.5, 0, 1);
+        const mag = s.shakeMagnitude * decay;
+        shakeX = (Math.random() * 2 - 1) * mag;
+        shakeY = (Math.random() * 2 - 1) * mag;
+        c.translate(shakeX, shakeY);
+      }
+
       const sky = c.createLinearGradient(0, 0, 0, height);
       sky.addColorStop(0, theme.palette.sky[0]);
       sky.addColorStop(0.45, theme.palette.sky[1]);
       sky.addColorStop(0.8, theme.palette.sky[2]);
       sky.addColorStop(1, theme.palette.sky[3]);
       c.fillStyle = sky;
-      c.fillRect(0, 0, width, height);
+      c.fillRect(-20, -20, width + 40, height + 40);
 
       for (const nb of s.nebulae) {
         const glow = c.createRadialGradient(nb.x, nb.y, 0, nb.x, nb.y, nb.r);
@@ -2797,11 +2940,39 @@ export default function FighterGame() {
         c.translate(en.x, en.y);
         drawJetShadow(c, en.scale);
         c.rotate(Math.PI);
+        // Regular-enemy variety is recolored via canvas filter rather than
+        // needing separate art: dodger shifts cyan, tanky darkens/desaturates
+        // to look armored, elite shifts gold/violet and brightens slightly.
+        c.filter =
+          en.kind === "dodger"
+            ? "hue-rotate(200deg) saturate(1.4)"
+            : en.kind === "tanky"
+              ? "brightness(0.75) saturate(0.7)"
+              : en.kind === "elite"
+                ? "hue-rotate(265deg) saturate(1.6) brightness(1.1)"
+                : "none";
         const sprite = en.isBoss ? jetImagesRef.current.monster : jetImagesRef.current.red;
         if (!USE_PLANE_SPRITES || !drawJetSprite(c, sprite, en.scale)) {
           drawJet(c, en.scale, Math.abs(Math.sin(s.elapsed * 18 + en.phase)), ENEMY_SCHEME);
         }
         c.restore();
+
+        // A small hp bar for any multi-hit regular enemy (tanky/elite), not
+        // just the boss -- otherwise a hit that doesn't kill it looks like
+        // it did nothing at all.
+        if (!en.isBoss && en.maxHp && en.maxHp > 1) {
+          const bw = 28;
+          const bh = 4;
+          const bx = en.x - bw / 2;
+          const by = en.y - ENEMY_RADIUS * en.scale - 10;
+          const pct = clamp((en.hp ?? 0) / en.maxHp, 0, 1);
+          c.save();
+          c.fillStyle = "rgba(0,0,0,0.55)";
+          c.fillRect(bx - 1, by - 1, bw + 2, bh + 2);
+          c.fillStyle = pct > 0.3 ? "#f59e0b" : "#f43f5e";
+          c.fillRect(bx, by, bw * pct, bh);
+          c.restore();
+        }
 
         if (en.isBoss && en.maxHp) {
           const barWidth = 90;
@@ -2917,6 +3088,8 @@ export default function FighterGame() {
         c.fill();
         c.restore();
       }
+
+      c.restore();
     }
 
     // Runs once inside this mount effect to seed the game clock, never during render.
@@ -3009,6 +3182,15 @@ export default function FighterGame() {
     >
       <canvas ref={canvasRef} className="absolute inset-0 block" />
 
+      {updateAvailable && (
+        <button
+          onClick={() => window.location.reload()}
+          className="absolute inset-x-0 top-0 z-50 bg-amber-500 px-3 py-2 text-center text-xs font-bold text-amber-950 active:bg-amber-400"
+        >
+          🔄 A new version is available — tap to reload
+        </button>
+      )}
+
       <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex items-start justify-between p-3 sm:p-4 text-white font-sans">
         {status !== "ready" &&
           (netRole === "solo" ? (
@@ -3087,6 +3269,21 @@ export default function FighterGame() {
           </button>
         </div>
       </div>
+
+      {levelTitleCard && status === "playing" && (
+        <div className="pointer-events-none absolute inset-x-0 top-[28%] z-40 flex flex-col items-center gap-1 font-sans">
+          <div
+            className="animate-pulse bg-gradient-to-b from-white via-sky-100 to-blue-400 bg-clip-text text-2xl uppercase tracking-wide text-transparent font-[family-name:var(--font-game)]"
+            style={{
+              WebkitTextStroke: "1.5px #071229",
+              textShadow: "0 3px 0 #071229, 0 0 16px rgba(56,132,255,0.85)",
+            }}
+          >
+            Level {levelTitleCard.level}
+          </div>
+          <div className="text-sm font-semibold text-white/80">{levelTitleCard.location}</div>
+        </div>
+      )}
 
       {showChat && netRole !== "solo" && status === "playing" && (
         <div className="absolute right-3 top-16 z-40 w-64 rounded-xl bg-black/85 p-3 text-white backdrop-blur-sm font-sans sm:right-4">

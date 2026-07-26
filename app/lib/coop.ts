@@ -102,6 +102,7 @@ export interface NetSnapshot {
     isBoss?: boolean;
     hp?: number;
     maxHp?: number;
+    kind?: "dodger" | "tanky" | "elite";
   }[];
   missiles: { x: number; y: number; vx: number; vy: number }[];
   bombs: { x: number; y: number; vy: number; rot: number }[];
