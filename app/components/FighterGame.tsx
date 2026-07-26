@@ -787,6 +787,22 @@ function drawJet(
   ctx.restore();
 }
 
+// Draws a preloaded plane sprite centered at the local origin, nose "up"
+// before rotation/scale is applied by the caller -- same calling convention
+// as drawJet, so the two are drop-in alternatives at each call site.
+// Returns false (drawing nothing) if the image hasn't finished loading yet,
+// so callers can fall back to the vector jet for that one frame.
+function drawJetSprite(ctx: CanvasRenderingContext2D, img: HTMLImageElement | undefined, scale: number): boolean {
+  if (!img || !img.complete || img.naturalWidth === 0) return false;
+  const height = 46;
+  const width = height * (img.naturalWidth / img.naturalHeight);
+  ctx.save();
+  ctx.scale(scale, scale);
+  ctx.drawImage(img, -width / 2, -height / 2, width, height);
+  ctx.restore();
+  return true;
+}
+
 function drawMissile(ctx: CanvasRenderingContext2D, wobble: number) {
   ctx.save();
   // exhaust
@@ -1149,6 +1165,23 @@ const ENEMY_SCHEME = {
   accent: "#f0f0f0",
 };
 
+// Toggle for the illustrated plane sprites vs. the original hand-drawn
+// vector jets above -- flip this back to false to instantly revert to the
+// vector look (the vector code is left fully intact for exactly that).
+const USE_PLANE_SPRITES = true;
+// Sprite art is nose-up already (matches drawJet's own local-space
+// convention), so the same rotation the vector path uses for enemies
+// (rotate(PI) to flip nose-down) and for player bank still applies as-is.
+const PLANE_SPRITES = {
+  blue: "/sprites/blueplane.webp",
+  green: "/sprites/greenplane.webp",
+  red: "/sprites/redplane.webp",
+};
+// players[] index -> sprite, same mapping PLAYER_SCHEMES uses (index 0 is
+// always the host's plane, index 1 the ally's, regardless of which device
+// is viewing).
+const PLAYER_SPRITE_KEYS: (keyof typeof PLANE_SPRITES)[] = ["blue", "green"];
+
 function readStoredBest(): number {
   if (typeof window === "undefined") return 0;
   try {
@@ -1179,6 +1212,10 @@ export default function FighterGame() {
   const timerValueRef = useRef<HTMLDivElement | null>(null);
   const lobbyModeRef = useRef<LobbyMode>("solo");
   const musicPlayerRef = useRef<MusicPlayer | null>(null);
+  // Preloaded once on mount so the render loop's drawImage calls never pay a
+  // decode cost mid-game -- plain HTMLImageElements are enough here (no
+  // canvas needed for decoding), and each file is small (~25-35KB webp).
+  const jetImagesRef = useRef<Partial<Record<keyof typeof PLANE_SPRITES, HTMLImageElement>>>({});
   // Purely a rendering-layer effect (not gameplay state, not networked):
   // each client tracks its own previous-frame x per player id and eases
   // toward a bank angle from the horizontal delta, so planes visibly lean
@@ -1302,6 +1339,15 @@ export default function FighterGame() {
       musicPlayerRef.current?.dispose();
       musicPlayerRef.current = null;
     };
+  }, []);
+
+  useEffect(() => {
+    if (!USE_PLANE_SPRITES) return;
+    for (const key of Object.keys(PLANE_SPRITES) as (keyof typeof PLANE_SPRITES)[]) {
+      const img = new Image();
+      img.src = PLANE_SPRITES[key];
+      jetImagesRef.current[key] = img;
+    }
   }, []);
 
   useEffect(() => {
@@ -2641,7 +2687,9 @@ export default function FighterGame() {
         c.translate(en.x, en.y);
         drawJetShadow(c, en.scale);
         c.rotate(Math.PI);
-        drawJet(c, en.scale, Math.abs(Math.sin(s.elapsed * 18 + en.phase)), ENEMY_SCHEME);
+        if (!USE_PLANE_SPRITES || !drawJetSprite(c, jetImagesRef.current.red, en.scale)) {
+          drawJet(c, en.scale, Math.abs(Math.sin(s.elapsed * 18 + en.phase)), ENEMY_SCHEME);
+        }
         c.restore();
       }
 
@@ -2662,7 +2710,10 @@ export default function FighterGame() {
           c.translate(pl.x, pl.y);
           drawJetShadow(c, 1);
           c.rotate(bank);
-          drawJet(c, 1, Math.abs(Math.sin(s.elapsed * 22)), PLAYER_SCHEMES[i % PLAYER_SCHEMES.length]);
+          const spriteKey = PLAYER_SPRITE_KEYS[i % PLAYER_SPRITE_KEYS.length];
+          if (!USE_PLANE_SPRITES || !drawJetSprite(c, jetImagesRef.current[spriteKey], 1)) {
+            drawJet(c, 1, Math.abs(Math.sin(s.elapsed * 22)), PLAYER_SCHEMES[i % PLAYER_SCHEMES.length]);
+          }
           c.restore();
         });
       }
