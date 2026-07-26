@@ -1397,10 +1397,11 @@ export default function FighterGame() {
     musicPlayerRef.current?.start(role === "solo" ? SOLO_MUSIC_TRACK : COOP_MUSIC_TRACK);
   };
 
-  const startSolo = () => {
+  const startSolo = (level: number = soloStartLevel) => {
     isDailyRef.current = false;
     setJustUnlockedLocation(null);
-    beginGame("solo", [localIdRef.current], soloStartLevel);
+    setSoloStartLevel(level);
+    beginGame("solo", [localIdRef.current], level);
   };
 
   const startDaily = () => {
@@ -1482,7 +1483,10 @@ export default function FighterGame() {
 
   const handleStart = () => {
     if (authPending) return;
-    if (lobbyMode === "solo") startSolo();
+    // Single Player opens the map instead of launching straight in --
+    // picking a location (or tapping the frontier one) is what actually
+    // starts the run. Daily/co-op are unaffected: those aren't location-based.
+    if (lobbyMode === "solo") setShowLocations(true);
     else if (lobbyMode === "daily") startDaily();
     else if (lobbyMode === "host") hostStartOrRestart();
   };
@@ -2784,6 +2788,55 @@ export default function FighterGame() {
               }}
             />
             <div className="relative mx-auto" style={{ width: PATH_WIDTH, height: roadmapHeight }}>
+              {/* Purely decorative distant scenery -- a soft nebula cluster
+                  and a couple of planets/moons scattered along the route,
+                  not tied to any location node. */}
+              <div
+                className="pointer-events-none absolute rounded-full"
+                style={{
+                  left: "10%",
+                  top: 50,
+                  width: 160,
+                  height: 160,
+                  background:
+                    "radial-gradient(circle, rgba(210,180,255,0.45), rgba(140,100,220,0.2) 45%, transparent 70%)",
+                  filter: "blur(3px)",
+                }}
+              />
+              <div
+                className="pointer-events-none absolute rounded-full"
+                style={{
+                  right: "4%",
+                  top: 24,
+                  width: 84,
+                  height: 84,
+                  background: "radial-gradient(circle at 35% 30%, #ded4ff, #6a5aa8 60%, #000 100%)",
+                  boxShadow: "0 0 28px 10px rgba(120,100,200,0.3)",
+                }}
+              />
+              <div
+                className="pointer-events-none absolute rounded-full"
+                style={{
+                  left: "6%",
+                  bottom: 260,
+                  width: 46,
+                  height: 46,
+                  background: "radial-gradient(circle at 35% 30%, #cfe8ff, #3a6a9a 60%, #000 100%)",
+                  boxShadow: "0 0 16px 5px rgba(70,130,200,0.3)",
+                }}
+              />
+              <div
+                className="pointer-events-none absolute rounded-full"
+                style={{
+                  right: "-10%",
+                  bottom: 10,
+                  width: 220,
+                  height: 220,
+                  background: "radial-gradient(circle at 30% 30%, #ffe9d6, #b5763f 55%, #3a2210 100%)",
+                  boxShadow: "0 0 40px 12px rgba(180,120,60,0.25)",
+                }}
+              />
+
               {/* Each location tints the backdrop near its own node with its
                   own palette, so the scenery's mood shifts as you scroll
                   through the route instead of staying one flat color. */}
@@ -2883,9 +2936,9 @@ export default function FighterGame() {
                     <button
                       disabled={locked}
                       onClick={() => {
-                        setSoloStartLevel(startLevel);
                         setShowLocations(false);
                         setHighlightLocation(null);
+                        startSolo(startLevel);
                       }}
                       aria-label={locked ? `${getLocationName(idx)} (locked)` : `Start at ${getLocationName(idx)}`}
                       className={`absolute flex items-center justify-center rounded-full transition-transform ${
@@ -2897,29 +2950,47 @@ export default function FighterGame() {
                         width: PATH_NODE_R * 2,
                         height: PATH_NODE_R * 2,
                         transform: "translate(-50%, -50%)",
-                        background: `radial-gradient(circle at 35% 30%, ${palette.planetCore}, ${palette.planetEdge} 70%, #000 100%)`,
                         boxShadow: isHighlighted
                           ? `0 0 0 3px rgba(250,204,21,0.95), 0 0 26px 8px rgba(250,204,21,0.6)`
                           : isFrontier
-                            ? `0 0 0 3px rgba(52,211,153,0.9), 0 0 22px 6px ${palette.planetEdge}aa`
+                            ? `0 0 0 3px rgba(52,211,153,0.95), 0 0 26px 9px rgba(52,211,153,0.65)`
                             : isSelected
                               ? `0 0 0 3px rgba(96,165,250,0.9), 0 0 14px 3px ${palette.planetEdge}88`
                               : `0 0 14px 3px ${palette.planetEdge}66`,
                       }}
                     >
-                      {locked && <span className="text-base">🔒</span>}
+                      {/* Hexagon badge body — clipped separately from the
+                          button itself so the soft outer glow above isn't
+                          also clipped to the hex outline. */}
+                      <span
+                        className="absolute inset-0"
+                        style={{
+                          clipPath: "polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%)",
+                          background: `linear-gradient(150deg, ${palette.planetCore}, ${palette.planetEdge} 65%, #000 130%)`,
+                        }}
+                      />
+                      {isFrontier && !locked && !isHighlighted && (
+                        <span
+                          className="absolute inset-0 animate-pulse"
+                          style={{
+                            clipPath: "polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%)",
+                            boxShadow: "inset 0 0 0 3px rgba(52,211,153,0.9)",
+                          }}
+                        />
+                      )}
+                      {locked && <span className="relative text-base">🔒</span>}
                       <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-black/70 px-1 text-[10px] font-bold text-white ring-1 ring-white/30">
                         {idx}
                       </span>
                       {isHighlighted ? (
-                        <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 rounded-full bg-yellow-400 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide text-black">
+                        <span className="absolute -bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-yellow-400 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide text-black">
                           New!
                         </span>
                       ) : (
                         isFrontier &&
                         !locked && (
-                          <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 rounded-full bg-emerald-500 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide">
-                            Now
+                          <span className="absolute -bottom-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-emerald-500 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wide">
+                            You are here
                           </span>
                         )
                       )}
