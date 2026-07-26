@@ -212,7 +212,7 @@ export default function AuthPanel({ onUserChange, refreshLeaderboardKey, onTopCh
             </button>
           </div>
           {showAvatarPicker && (
-            <div className="flex flex-col items-center gap-1.5 rounded-xl bg-white/10 px-3 py-2.5">
+            <div className="flex max-w-72 flex-col items-center gap-1.5 rounded-xl bg-white/10 px-3 py-2.5">
               <p className="text-[10px] uppercase tracking-wide text-white/50">Choose your avatar</p>
               <div className="flex flex-wrap justify-center gap-1.5">
                 {AVATAR_OPTIONS.map((opt) => (
