@@ -16,6 +16,11 @@ export interface MusicPlayer {
   stop(): void;
   setMuted(muted: boolean): void;
   dispose(): void;
+  // True once the element is actually producing sound (not just that we
+  // called play() -- some mobile/in-app browsers silently ignore a play()
+  // call even from what looks like a valid gesture, so callers use this to
+  // decide whether to show an explicit "tap to enable sound" fallback.
+  isPlaying(): boolean;
 }
 
 const VOLUME = 0.5;
@@ -69,6 +74,9 @@ export function createMusicPlayer(): MusicPlayer {
         audio = null;
         currentSrc = null;
       }
+    },
+    isPlaying() {
+      return !!audio && !audio.paused && !audio.ended && audio.currentTime > 0;
     },
   };
 }

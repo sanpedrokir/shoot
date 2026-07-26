@@ -1,7 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useState, type Ref } from "react";
 import { AVATAR_OPTIONS, avatarSrcFor } from "../lib/avatars";
+
+export interface AuthPanelHandle {
+  logout: () => void;
+}
 
 export interface AuthUser {
   nickname: string;
@@ -50,7 +54,10 @@ function storeLocalProgress(highScore: number, maxLevel: number) {
 
 type Mode = "login" | "register";
 
-export default function AuthPanel({ onUserChange, refreshLeaderboardKey, onTopChange, onPendingAuthChange }: AuthPanelProps) {
+function AuthPanel(
+  { onUserChange, refreshLeaderboardKey, onTopChange, onPendingAuthChange }: AuthPanelProps,
+  ref: Ref<AuthPanelHandle>
+) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [checkedSession, setCheckedSession] = useState(false);
   const [mode, setMode] = useState<Mode>("login");
@@ -144,15 +151,21 @@ export default function AuthPanel({ onUserChange, refreshLeaderboardKey, onTopCh
     setError("");
   };
 
-  const logout = async () => {
-    try {
-      await fetch("/api/auth/logout", { method: "POST" });
-    } catch {
-      // ignore
-    }
-    setUser(null);
-    onUserChange(null);
-  };
+  useImperativeHandle(
+    ref,
+    () => ({
+      logout: async () => {
+        try {
+          await fetch("/api/auth/logout", { method: "POST" });
+        } catch {
+          // ignore
+        }
+        setUser(null);
+        onUserChange(null);
+      },
+    }),
+    [onUserChange]
+  );
 
   const pickAvatar = async (avatarId: string) => {
     if (!user || avatarSaving) return;
@@ -206,9 +219,6 @@ export default function AuthPanel({ onUserChange, refreshLeaderboardKey, onTopCh
               className="h-6 w-6 rounded-full ring-1 ring-white/30"
             />
             <span className="font-semibold text-white">{user.nickname}</span>
-            <button onClick={logout} className="underline underline-offset-2">
-              Logout
-            </button>
             <button
               onClick={() => setShowAvatarPicker((v) => !v)}
               aria-label="Avatar settings"
@@ -295,3 +305,5 @@ export default function AuthPanel({ onUserChange, refreshLeaderboardKey, onTopCh
     </div>
   );
 }
+
+export default forwardRef(AuthPanel);

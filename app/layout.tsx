@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Baloo_2 } from "next/font/google";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -10,6 +10,15 @@ const geistSans = Geist({
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+});
+
+// A rounded, friendly display face for in-game headlines (You Survived!,
+// location names, Game Over) -- the plain sans-serif read as flat/generic
+// for a game, this is the same style of face typical casual mobile games use.
+const gameDisplay = Baloo_2({
+  variable: "--font-game",
+  subsets: ["latin"],
+  weight: ["600", "700", "800"],
 });
 
 export const metadata: Metadata = {
@@ -47,7 +56,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} ${gameDisplay.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col overflow-hidden">{children}</body>
     </html>

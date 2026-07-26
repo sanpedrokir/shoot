@@ -129,3 +129,37 @@ export function playShieldPickupSound() {
     // Sound is a nice-to-have — never let it block gameplay.
   }
 }
+
+// A fast rising sawtooth sweep for grabbing Rapid Fire -- reads as an
+// energizing "power up!" rather than the gentler shield chime, matching how
+// much more aggressive the buff itself is.
+export function playRapidFireSound() {
+  const audioCtx = getContext();
+  if (!audioCtx) return;
+  try {
+    const duration = 0.2;
+    const now = audioCtx.currentTime;
+
+    const osc = audioCtx.createOscillator();
+    osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(280, now);
+    osc.frequency.exponentialRampToValueAtTime(1400, now + duration);
+
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(2200, now);
+
+    const gain = audioCtx.createGain();
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.22, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + duration);
+  } catch {
+    // Sound is a nice-to-have — never let it block gameplay.
+  }
+}

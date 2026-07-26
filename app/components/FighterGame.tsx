@@ -14,8 +14,14 @@ import {
   type ChatMessage,
 } from "../lib/coop";
 import { createMusicPlayer, type MusicPlayer } from "../lib/musicPlayer";
-import { playPageFlipSound, playEnemyHitSound, playShieldPickupSound, primeAudioContext } from "../lib/sfx";
-import AuthPanel, { type AuthUser, type LeaderboardTop } from "./AuthPanel";
+import {
+  playPageFlipSound,
+  playEnemyHitSound,
+  playShieldPickupSound,
+  playRapidFireSound,
+  primeAudioContext,
+} from "../lib/sfx";
+import AuthPanel, { type AuthUser, type AuthPanelHandle, type LeaderboardTop } from "./AuthPanel";
 
 type Bullet = { x: number; y: number; vy: number; ownerId: string; rapid: boolean };
 type Missile = { x: number; y: number; vy: number; vx: number };
@@ -1128,18 +1134,19 @@ const ALLY_SCHEME_AMBER = {
 
 const PLAYER_SCHEMES = [PLAYER_SCHEME, ALLY_SCHEME_GREEN, ALLY_SCHEME_AMBER];
 
-// Brightened up from the original daytime-sky palette — against the new dark
-// space background, the old near-black hull and roundel center would blend
-// straight into the sky and become hard to spot.
+// A solid red hull (rather than the old grey body with just a red trim)
+// reads as clearly hostile at a glance — the roundel/accent details flip to
+// dark/near-black so they still stand out against the red instead of
+// disappearing into it.
 const ENEMY_SCHEME = {
-  bodyTop: "#8a8fa0",
-  bodyBottom: "#3a3e48",
-  stroke: "#c23b3b",
-  canopyTop: "#ffb199",
-  canopyBottom: "#6a1a1a",
-  roundelOuter: "#e0202f",
+  bodyTop: "#f2564a",
+  bodyBottom: "#7a1210",
+  stroke: "#2a0605",
+  canopyTop: "#ffcdb8",
+  canopyBottom: "#5c1210",
+  roundelOuter: "#1c1c1c",
   roundelInner: "#f0f0f0",
-  accent: "#e8e8e8",
+  accent: "#f0f0f0",
 };
 
 function readStoredBest(): number {
@@ -1263,6 +1270,7 @@ export default function FighterGame() {
   const [teammateIds, setTeammateIds] = useState<string[]>([]);
 
   const [user, setUser] = useState<AuthUser | null>(null);
+  const authPanelRef = useRef<AuthPanelHandle | null>(null);
   const userRef = useRef<AuthUser | null>(null);
   const [refreshLeaderboardKey, setRefreshLeaderboardKey] = useState(0);
   const [globalTop, setGlobalTop] = useState<LeaderboardTop | null>(null);
@@ -1277,6 +1285,12 @@ export default function FighterGame() {
   }, [authPending]);
 
   const [musicMuted, setMusicMuted] = useState(false);
+  // Some mobile/in-app browsers silently swallow a play() call even from a
+  // seemingly valid gesture (stricter than the standard autoplay spec) --
+  // this is a guaranteed-to-work fallback: a real button the player taps
+  // directly, shown only for as long as the menu track isn't actually
+  // audible yet.
+  const [showSoundPrompt, setShowSoundPrompt] = useState(false);
 
   useEffect(() => {
     localIdRef.current = getClientId();
@@ -1325,6 +1339,23 @@ export default function FighterGame() {
       window.removeEventListener("touchstart", tryResumeMenuMusic, { capture: true });
     };
   }, []);
+
+  // Polls whether the menu track is actually audible while on the ready
+  // screen, and surfaces the manual "Enable Sound" button whenever it
+  // isn't -- catches the case where every gesture-based unlock attempt
+  // above still didn't work (seen on some in-app/mobile browsers).
+  useEffect(() => {
+    // Nothing to poll outside the ready screen -- the button itself is
+    // already gated on status/showLocations at render time, so there's no
+    // need to separately reset the flag here.
+    if (status !== "ready" || showLocations) return;
+    const check = () => {
+      setShowSoundPrompt(!musicPlayerRef.current?.isPlaying());
+    };
+    check();
+    const id = setInterval(check, 800);
+    return () => clearInterval(id);
+  }, [status, showLocations]);
 
   useEffect(() => {
     // Reads localStorage after hydration (not in the initial state) so the
@@ -2338,6 +2369,7 @@ export default function FighterGame() {
           if (dist2(pl.x, pl.y, rf.x, rf.y) < r * r) {
             pl.rapidFireUntil = Math.max(pl.rapidFireUntil, s.elapsed) + RAPIDFIRE_DURATION;
             spawnExplosion(s.particles, rf.x, rf.y, ["#fff3b0", "#ffb833", "#c9660a"], 10);
+            playRapidFireSound();
             s.rapidFires = s.rapidFires.filter((r2) => r2 !== rf);
             break;
           }
@@ -3170,6 +3202,18 @@ export default function FighterGame() {
             className="-mx-6 w-[calc(100%+3rem)] drop-shadow-[0_4px_24px_rgba(56,132,255,0.4)]"
           />
 
+          {showSoundPrompt && (
+            <button
+              onClick={() => {
+                setShowSoundPrompt(false);
+                musicPlayerRef.current?.start(MENU_MUSIC_TRACK);
+              }}
+              className="-mt-2 flex items-center gap-1.5 rounded-full border border-white/25 bg-black/40 px-4 py-1.5 text-xs font-semibold text-white/90 backdrop-blur-sm active:scale-95 transition-transform animate-pulse"
+            >
+              🔊 Tap for Sound
+            </button>
+          )}
+
           <div className="grid w-full max-w-xs grid-cols-3 gap-2.5">
             {(
               [
@@ -3270,6 +3314,7 @@ export default function FighterGame() {
           {best > 0 && <p className="text-xs text-white/60">Your Best Score: {best}</p>}
 
           <AuthPanel
+            ref={authPanelRef}
             onUserChange={handleUserChange}
             refreshLeaderboardKey={refreshLeaderboardKey}
             onTopChange={setGlobalTop}
@@ -3288,16 +3333,24 @@ export default function FighterGame() {
               </button>
             </div>
           )}
+          {user && (
+            <button
+              onClick={() => authPanelRef.current?.logout()}
+              className="rounded-full border border-white/20 bg-white/10 px-5 py-1.5 text-xs font-semibold active:scale-95 transition-transform"
+            >
+              Logout
+            </button>
+          )}
         </div>
       )}
 
       {status === "levelcomplete" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/65 px-6 text-center text-white font-sans">
           <h2
-            className="bg-gradient-to-b from-white via-emerald-100 to-emerald-400 bg-clip-text text-4xl font-black uppercase tracking-tight text-transparent"
+            className="bg-gradient-to-b from-white via-yellow-100 to-yellow-400 bg-clip-text text-4xl uppercase tracking-tight text-transparent font-[family-name:var(--font-game)]"
             style={{
-              WebkitTextStroke: "1.5px #052e21",
-              textShadow: "0 3px 0 #052e21, 0 0 16px rgba(16,185,129,0.8), 0 0 30px rgba(16,185,129,0.5)",
+              WebkitTextStroke: "1.5px #4a2e05",
+              textShadow: "0 3px 0 #4a2e05, 0 0 16px rgba(250,204,21,0.85), 0 0 30px rgba(250,204,21,0.55)",
             }}
           >
             You Survived!
@@ -3305,14 +3358,14 @@ export default function FighterGame() {
           {isProgressiveRun && (
             <div className="flex flex-col items-center gap-2">
               <div className="flex flex-col items-center gap-0.5">
-                <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-300/80">
+                <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-yellow-300/90">
                   🔓 New Location Unlocked
                 </span>
                 <p
-                  className="bg-gradient-to-b from-emerald-100 to-emerald-400 bg-clip-text text-xl font-black uppercase tracking-wide text-transparent"
+                  className="bg-gradient-to-b from-yellow-100 to-yellow-400 bg-clip-text text-xl uppercase tracking-wide text-transparent font-[family-name:var(--font-game)]"
                   style={{
-                    WebkitTextStroke: "1px #052e21",
-                    textShadow: "0 2px 0 #052e21, 0 0 12px rgba(16,185,129,0.65)",
+                    WebkitTextStroke: "1px #4a2e05",
+                    textShadow: "0 2px 0 #4a2e05, 0 0 12px rgba(250,204,21,0.7)",
                   }}
                 >
                   {justUnlockedLocation}
@@ -3374,7 +3427,15 @@ export default function FighterGame() {
 
       {status === "gameover" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/65 px-6 text-center text-white font-sans">
-          <h2 className="text-3xl font-extrabold">{isAlly && hostLeft ? "Host Disconnected" : "Plane Shot Down!"}</h2>
+          <h2
+            className="bg-gradient-to-b from-white via-rose-100 to-rose-500 bg-clip-text text-4xl uppercase tracking-tight text-transparent font-[family-name:var(--font-game)]"
+            style={{
+              WebkitTextStroke: "1.5px #4a0505",
+              textShadow: "0 3px 0 #4a0505, 0 0 16px rgba(244,63,94,0.85), 0 0 30px rgba(244,63,94,0.5)",
+            }}
+          >
+            {isAlly && hostLeft ? "Host Disconnected" : "Plane Shot Down!"}
+          </h2>
           <p className="text-lg">
             Your Score: <span className="font-bold">{score.toLocaleString()}</span>
           </p>
