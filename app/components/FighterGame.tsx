@@ -144,6 +144,11 @@ const RAPIDFIRE_HIT_RADIUS = 18;
 // Normal fire interval is 0.18s; rapid fire roughly triples the rate for a
 // limited window rather than being a permanent upgrade.
 const RAPIDFIRE_INTERVAL = 0.06;
+// Even faster than a normal Rapid Fire buff, and applied automatically
+// (on top of whichever buff a player already has) for as long as the boss
+// is alive -- it needs to feel genuinely killable within its ~10 second
+// window, not just "a bit more fire" on top of a boss with a lot of hp.
+const BOSS_FIRE_INTERVAL = 0.045;
 const RAPIDFIRE_DURATION = 8;
 
 const SMARTBOMB_HIT_RADIUS = 18;
@@ -2099,11 +2104,12 @@ export default function FighterGame() {
 
       // auto-fire, one volley per player — faster while a Rapid Fire buff
       // is active.
+      const bossActive = s.enemies.some((e) => e.isBoss);
       for (const pl of s.players) {
         pl.fireTimer -= dt;
         if (pl.fireTimer <= 0) {
-          const rapid = s.elapsed < pl.rapidFireUntil;
-          pl.fireTimer = rapid ? RAPIDFIRE_INTERVAL : s.baseFireInterval;
+          const rapid = bossActive || s.elapsed < pl.rapidFireUntil;
+          pl.fireTimer = bossActive ? BOSS_FIRE_INTERVAL : rapid ? RAPIDFIRE_INTERVAL : s.baseFireInterval;
           s.bullets.push({ x: pl.x - 7, y: pl.y - 14, vy: -560, ownerId: pl.id, rapid });
           s.bullets.push({ x: pl.x + 7, y: pl.y - 14, vy: -560, ownerId: pl.id, rapid });
         }
@@ -2222,7 +2228,11 @@ export default function FighterGame() {
       // grants, so a solo player has an actual fighting chance against it.
       if (!s.bossSpawned && timeLeft <= 10) {
         s.bossSpawned = true;
-        const maxHp = 30 + extraPlayers * 15 + Math.floor(difficulty * 2);
+        // Tuned so sustained, reasonably accurate fire during the boost
+        // below (BOSS_FIRE_INTERVAL, 2 bullets/volley) clears it well within
+        // the ~10 second window -- this is meant to be a tense but
+        // genuinely winnable fight, not a damage-sponge stalemate.
+        const maxHp = 18 + extraPlayers * 10 + Math.floor(difficulty * 1.5);
         const cx = s.width / 2;
         const cy = s.height * 0.22;
         s.enemies.push({
@@ -2237,7 +2247,9 @@ export default function FighterGame() {
           isBoss: true,
           hp: maxHp,
           maxHp,
-          orbit: { cx, cy, radius: 26, angle: Math.random() * Math.PI * 2, speed: 0.35 },
+          // Tighter drift than the old cluster's — easier to stay under it
+          // and keep landing hits instead of chasing it side to side.
+          orbit: { cx, cy, radius: 16, angle: Math.random() * Math.PI * 2, speed: 0.35 },
         });
         for (const pl of s.players) {
           pl.rapidFireUntil = Math.max(pl.rapidFireUntil, s.elapsed) + timeLeft + 3;
