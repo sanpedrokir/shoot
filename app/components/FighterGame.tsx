@@ -154,10 +154,10 @@ const GRAVITY = 130;
 // same thing.
 const SOLO_MUSIC_TRACKS = [
   "/audio/theme-solo-ente-evil.mp3",
-  "/audio/theme-solo-metal-ages.wav",
+  "/audio/theme-solo-megasong.mp3",
   "/audio/theme-solo-menace.mp3",
   "/audio/theme-solo-calamity.mp3",
-  "/audio/theme-solo-some-must-fall.flac",
+  "/audio/theme-solo-devoted-guard.mp3",
 ];
 function pickSoloMusicTrack(): string {
   return SOLO_MUSIC_TRACKS[Math.floor(Math.random() * SOLO_MUSIC_TRACKS.length)];
