@@ -39,11 +39,16 @@ type Enemy = {
   scale: number;
   fireTimer: number;
   bombTimer: number;
-  // Present only for the finale cluster: loops the plane continuously
-  // around a fixed point instead of falling, so it never leaves the screen
-  // on its own — it's there until the player shoots it down or time runs
-  // out, not until it happens to drift off the bottom.
+  // Present only for the boss: loops the plane continuously around a fixed
+  // point instead of falling, so it never leaves the screen on its own —
+  // it's there until the player shoots it down or time runs out, not until
+  // it happens to drift off the bottom.
   orbit?: { cx: number; cy: number; radius: number; angle: number; speed: number };
+  // Present only for the boss — takes many hits instead of one, so bullet
+  // damage decrements this instead of destroying it outright.
+  isBoss?: boolean;
+  hp?: number;
+  maxHp?: number;
 };
 type Particle = {
   x: number;
@@ -113,13 +118,8 @@ interface GameState {
   // enemies, the bomb lull) purely through the normal snapshot sync.
   midpointWaveSpawned: boolean;
   bombsSuppressedUntil: number;
-  // Same pattern for the final-15-seconds orbiting finale cluster. Slot
-  // centers are fixed once the cluster spawns; finalRespawnTimer drives
-  // topping up any slot a player clears out, so the cluster stays populated
-  // for the whole window instead of running dry once destroyed.
-  finalWaveSpawned: boolean;
-  finalSlots: { cx: number; cy: number }[];
-  finalRespawnTimer: number;
+  // Same host/solo-only pattern for the final-10-seconds boss.
+  bossSpawned: boolean;
 }
 
 const PLAYER_RADIUS = 14;
@@ -186,6 +186,11 @@ const CHAT_BUBBLE_DURATION = 3000;
 const BROADCAST_INTERVAL = 1 / 8;
 const INPUT_SEND_INTERVAL = 1 / 8;
 const MAX_SNAPSHOT_ENTITIES = 40;
+// Hard ceiling on simulated enemies at once, independent of the network
+// snapshot cap above -- the difficulty curve keeps climbing forever at deep
+// levels, and without this the bullet-vs-enemy collision pass (O(bullets ×
+// enemies) every frame) could grow unbounded over a very long/deep run.
+const MAX_LIVE_ENEMIES = 60;
 
 // ---------------------------------------------------------------------
 // Locations: every level is its own named "location" the player travels
@@ -530,9 +535,7 @@ function makeInitialState(width: number, height: number, level: number, playerId
     keys: new Set(),
     midpointWaveSpawned: false,
     bombsSuppressedUntil: 0,
-    finalWaveSpawned: false,
-    finalSlots: [],
-    finalRespawnTimer: 0,
+    bossSpawned: false,
   };
 }
 
@@ -1193,6 +1196,7 @@ const PLANE_SPRITES = {
   blue: "/sprites/blueplane.webp",
   green: "/sprites/greenplane.webp",
   red: "/sprites/redplane.webp",
+  monster: "/sprites/monsterplane.webp",
 };
 // players[] index -> sprite, same mapping PLAYER_SCHEMES uses (index 0 is
 // always the host's plane, index 1 the ally's, regardless of which device
@@ -1955,6 +1959,9 @@ export default function FighterGame() {
               speed: ne.orbit.speed,
             }
           : undefined,
+        isBoss: ne.isBoss,
+        hp: ne.hp,
+        maxHp: ne.maxHp,
       }));
       s.missiles = snap.missiles.map((nm) => ({
         x: nm.x * scaleX,
@@ -2009,7 +2016,13 @@ export default function FighterGame() {
           score: scoresRef.current[i] ?? 0,
           rapidFireUntil: round1(pl.rapidFireUntil),
         })),
-        enemies: s.enemies
+        enemies: (s.enemies.length > MAX_SNAPSHOT_ENTITIES
+          ? // The boss must always make it into the broadcast slice, even if
+            // a busy screen otherwise has more entities than the cap -- the
+            // sort only runs on the rare frame that's actually over the cap.
+            [...s.enemies].sort((a, b) => (b.isBoss ? 1 : 0) - (a.isBoss ? 1 : 0))
+          : s.enemies
+        )
           .slice(0, MAX_SNAPSHOT_ENTITIES)
           .map((en) => ({
             x: round1(en.x),
@@ -2027,6 +2040,9 @@ export default function FighterGame() {
                   speed: round1(en.orbit.speed),
                 }
               : undefined,
+            isBoss: en.isBoss,
+            hp: en.hp,
+            maxHp: en.maxHp,
           })),
         missiles: s.missiles
           .slice(0, MAX_SNAPSHOT_ENTITIES)
@@ -2115,7 +2131,7 @@ export default function FighterGame() {
       // (except during the finalePush window above) — it should read as a
       // clean shooting gallery, not get cluttered by more planes falling in
       // around it.
-      if (s.spawnTimer <= 0 && (!s.finalWaveSpawned || finalePush)) {
+      if (s.spawnTimer <= 0 && (!s.bossSpawned || finalePush)) {
         s.spawnTimer =
           (clamp(1.6 - difficulty * 0.5 - swarmFocus * 0.3, 0.45, 1.6) + Math.random() * 0.3) /
           (1 + extraPlayers * 0.35) /
@@ -2133,23 +2149,31 @@ export default function FighterGame() {
         const extraSwarm = Math.min(1, Math.floor(swarmFocus * 2.2));
         const difficultySwarm = Math.floor(difficulty / 2.5);
         const coopPlaneBonus = Math.round(extraPlayers * coopBonusIntensity(swarmFocus) * 5);
-        const count = 2 + coopPlaneBonus + extraSwarm + difficultySwarm + (finalePush ? 2 : 0);
-        const spacing = 34;
-        const offsets = wedgeFormation(count, spacing, 22);
-        const maxAbsDx = Math.max(...offsets.map((o) => Math.abs(o.dx)));
-        const margin = 30 + maxAbsDx;
-        const anchorX = margin + Math.random() * Math.max(1, s.width - margin * 2);
-        for (let i = 0; i < offsets.length; i++) {
-          s.enemies.push({
-            x: clamp(anchorX + offsets[i].dx, 30, s.width - 30),
-            y: -30 + offsets[i].dy,
-            vy: 55 + Math.random() * 35 + Math.min(difficulty, 14) * 40 + (finalePush ? 90 : 0),
-            phase: Math.random() * Math.PI * 2,
-            amp: 20 + Math.random() * 40,
-            scale: 0.85 + Math.random() * 0.35,
-            fireTimer: 1.8 + Math.random() * 1.8,
-            bombTimer: 1.2 + Math.random() * 2.2,
-          });
+        const desiredCount = 2 + coopPlaneBonus + extraSwarm + difficultySwarm + (finalePush ? 2 : 0);
+        // Hard-capped against MAX_LIVE_ENEMIES so an extremely deep/long run
+        // (the difficulty curve climbs forever) can never grow the live
+        // enemy count -- and so the O(bullets x enemies) collision pass --
+        // without bound.
+        const room = Math.max(0, MAX_LIVE_ENEMIES - s.enemies.length);
+        const count = Math.min(desiredCount, room);
+        if (count > 0) {
+          const spacing = 34;
+          const offsets = wedgeFormation(count, spacing, 22);
+          const maxAbsDx = Math.max(...offsets.map((o) => Math.abs(o.dx)));
+          const margin = 30 + maxAbsDx;
+          const anchorX = margin + Math.random() * Math.max(1, s.width - margin * 2);
+          for (let i = 0; i < offsets.length; i++) {
+            s.enemies.push({
+              x: clamp(anchorX + offsets[i].dx, 30, s.width - 30),
+              y: -30 + offsets[i].dy,
+              vy: 55 + Math.random() * 35 + Math.min(difficulty, 14) * 40 + (finalePush ? 90 : 0),
+              phase: Math.random() * Math.PI * 2,
+              amp: 20 + Math.random() * 40,
+              scale: 0.85 + Math.random() * 0.35,
+              fireTimer: 1.8 + Math.random() * 1.8,
+              bombTimer: 1.2 + Math.random() * 2.2,
+            });
+          }
         }
       }
 
@@ -2169,7 +2193,9 @@ export default function FighterGame() {
         const maxAbsDx = Math.max(...offsets.map((o) => Math.abs(o.dx)));
         const margin = 30 + maxAbsDx;
         const anchorX = clamp(s.width / 2, margin, Math.max(margin, s.width - margin));
-        for (const offset of offsets) {
+        // Same MAX_LIVE_ENEMIES cap as the regular bursts above.
+        const room = Math.max(0, MAX_LIVE_ENEMIES - s.enemies.length);
+        for (const offset of offsets.slice(0, room)) {
           s.enemies.push({
             x: clamp(anchorX + offset.dx, 30, s.width - 30),
             y: -30 + offset.dy,
@@ -2184,64 +2210,37 @@ export default function FighterGame() {
         s.bombsSuppressedUntil = s.elapsed + 10;
       }
 
-      // Finale: with 8 seconds left on the clock, a wide gathered band of
-      // enemies arrives near the top of the screen and each one hovers
-      // (a slow drifting loop, not a spin) around its own spot in the
-      // formation instead of falling through and off the screen —
-      // they stay put (and keep shooting) until the player clears them or
-      // time runs out, rather than draining away and leaving nothing to
-      // shoot at for the last few seconds. Any slot the player clears out
-      // gets a fresh enemy after a short beat, so a fast player emptying the
-      // whole cluster doesn't leave the sky empty for the rest of the window
-      // — it keeps refilling until time actually runs out.
-      const spawnFinalEnemy = (cx: number, cy: number) => {
+      // Boss: with 10 seconds left on the clock, a single massive "monster"
+      // plane drops in and hovers — a slow drifting loop, not a spin — near
+      // the top of the screen instead of falling through. It takes many
+      // hits instead of one (bullet damage decrements hp in the collision
+      // pass below) and fires far more aggressively than a regular enemy,
+      // and stays until the player brings it down or time runs out (no
+      // respawn if it's destroyed early — that's the reward for doing it).
+      // Every player gets a temporary firepower boost the moment it
+      // arrives, reusing the same rapidFireUntil buff a Rapid Fire pickup
+      // grants, so a solo player has an actual fighting chance against it.
+      if (!s.bossSpawned && timeLeft <= 10) {
+        s.bossSpawned = true;
+        const maxHp = 30 + extraPlayers * 15 + Math.floor(difficulty * 2);
+        const cx = s.width / 2;
+        const cy = s.height * 0.22;
         s.enemies.push({
           x: cx,
           y: cy,
           vy: 0,
           phase: Math.random() * Math.PI * 2,
           amp: 0,
-          scale: 0.85 + Math.random() * 0.35,
-          fireTimer: 1.8 + Math.random() * 1.8,
-          bombTimer: 1.2 + Math.random() * 2.2,
-          orbit: {
-            cx,
-            cy,
-            // A slow, gentle drift -- reads as a cluster of planes hovering
-            // in place (like clouds) rather than spinning -- that visibly
-            // picks up urgency once finalePush kicks in.
-            radius: 14 + Math.random() * 14,
-            angle: Math.random() * Math.PI * 2,
-            speed: (Math.random() < 0.5 ? -1 : 1) * (0.5 + Math.random() * 0.5) * (finalePush ? 1.8 : 1),
-          },
+          scale: 3.2,
+          fireTimer: 1,
+          bombTimer: 2,
+          isBoss: true,
+          hp: maxHp,
+          maxHp,
+          orbit: { cx, cy, radius: 26, angle: Math.random() * Math.PI * 2, speed: 0.35 },
         });
-      };
-      if (!s.finalWaveSpawned && timeLeft <= 8) {
-        s.finalWaveSpawned = true;
-        const rows = 2;
-        const cols = 6 + extraPlayers * 2;
-        const spacingX = 54;
-        const spacingY = 42;
-        const offsets = gridFormation(rows, cols, spacingX, spacingY);
-        const maxAbsDx = Math.max(...offsets.map((o) => Math.abs(o.dx)));
-        const margin = 30 + maxAbsDx;
-        const anchorX = clamp(s.width / 2, margin, Math.max(margin, s.width - margin));
-        const anchorY = s.height * 0.16;
-        s.finalSlots = offsets.map((offset) => ({
-          cx: clamp(anchorX + offset.dx, 30, s.width - 30),
-          cy: anchorY + offset.dy,
-        }));
-        for (const slot of s.finalSlots) spawnFinalEnemy(slot.cx, slot.cy);
-      } else if (s.finalWaveSpawned && timeLeft > 0) {
-        s.finalRespawnTimer -= dt;
-        if (s.finalRespawnTimer <= 0) {
-          s.finalRespawnTimer = finalePush ? 0.3 + Math.random() * 0.3 : 0.8 + Math.random() * 0.8;
-          const occupied = new Set(s.enemies.filter((en) => en.orbit).map((en) => `${en.orbit!.cx},${en.orbit!.cy}`));
-          const emptySlots = s.finalSlots.filter((slot) => !occupied.has(`${slot.cx},${slot.cy}`));
-          if (emptySlots.length > 0) {
-            const slot = emptySlots[Math.floor(Math.random() * emptySlots.length)];
-            spawnFinalEnemy(slot.cx, slot.cy);
-          }
+        for (const pl of s.players) {
+          pl.rapidFireUntil = Math.max(pl.rapidFireUntil, s.elapsed) + timeLeft + 3;
         }
       }
 
@@ -2257,7 +2256,9 @@ export default function FighterGame() {
         }
         en.fireTimer -= dt;
         if (en.fireTimer <= 0 && en.y > 10 && en.y < s.height - 60 && s.players.length > 0) {
-          en.fireTimer = clamp(2.2 - difficulty * 0.3, 0.6, 2.2) + Math.random() * 1.6;
+          en.fireTimer = en.isBoss
+            ? 0.35 + Math.random() * 0.25
+            : clamp(2.2 - difficulty * 0.3, 0.6, 2.2) + Math.random() * 1.6;
           let nearest = s.players[0];
           let nearestD = dist2(en.x, en.y, nearest.x, nearest.y);
           for (const pl of s.players) {
@@ -2270,12 +2271,18 @@ export default function FighterGame() {
           const dx = nearest.x - en.x;
           const dy = nearest.y - en.y;
           const len = Math.hypot(dx, dy) || 1;
-          s.missiles.push({
-            x: en.x,
-            y: en.y + 10,
-            vy: (dy / len) * 190 + 80,
-            vx: (dx / len) * 100,
-          });
+          // The boss fires from twin cannons instead of a single nose gun —
+          // reads as a real barrage rather than the occasional pot-shot a
+          // regular enemy takes.
+          const muzzles = en.isBoss ? [-20, 20] : [0];
+          for (const mx of muzzles) {
+            s.missiles.push({
+              x: en.x + mx,
+              y: en.y + 10,
+              vy: (dy / len) * 190 + 80,
+              vx: (dx / len) * 100,
+            });
+          }
         }
         en.bombTimer -= dt;
         if (en.bombTimer <= 0 && en.y > 10 && en.y < s.height - 100) {
@@ -2284,9 +2291,10 @@ export default function FighterGame() {
           // also mean noticeably more bombs falling (shaped the same way as
           // the plane bonus above, so there's a real rest window between
           // the two rather than either always being at least partway on).
-          en.bombTimer =
-            clamp(2.8 - difficulty * 0.35 - bombFocus * 1.8 - extraPlayers * coopBonusIntensity(bombFocus) * 1.8, 0.3, 2.8) +
-            Math.random() * 2.4;
+          en.bombTimer = en.isBoss
+            ? 0.7 + Math.random() * 0.6
+            : clamp(2.8 - difficulty * 0.35 - bombFocus * 1.8 - extraPlayers * coopBonusIntensity(bombFocus) * 1.8, 0.3, 2.8) +
+              Math.random() * 2.4;
           // Timer still resets on schedule during the post-wave suppression
           // window (so bombs don't all pile up and burst the moment it
           // ends) — only the actual drop is held back.
@@ -2390,16 +2398,34 @@ export default function FighterGame() {
       let scored = false;
       for (const b of s.bullets) {
         for (const en of s.enemies) {
+          // Non-boss enemies still only ever take one hit and are excluded
+          // once dead; the boss is deliberately NOT added to deadEnemies on
+          // a non-lethal hit, so multiple bullets landing in the same frame
+          // all chip its hp instead of only the first one counting.
           if (deadEnemies.has(en) || deadBullets.has(b)) continue;
           const r = ENEMY_RADIUS * en.scale;
           if (dist2(b.x, b.y, en.x, en.y) < r * r) {
-            deadEnemies.add(en);
             deadBullets.add(b);
-            spawnExplosion(s.particles, en.x, en.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"]);
             const idx = s.players.findIndex((p) => p.id === b.ownerId);
-            if (idx >= 0) {
-              scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 10;
-              scored = true;
+            if (en.isBoss) {
+              en.hp = (en.hp ?? 1) - 1;
+              spawnExplosion(s.particles, b.x, b.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], 4);
+              if (idx >= 0) {
+                scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 2;
+                scored = true;
+              }
+              if (en.hp <= 0) {
+                deadEnemies.add(en);
+                spawnExplosion(s.particles, en.x, en.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], 40);
+                if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 100;
+              }
+            } else {
+              deadEnemies.add(en);
+              spawnExplosion(s.particles, en.x, en.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"]);
+              if (idx >= 0) {
+                scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 10;
+                scored = true;
+              }
             }
           }
         }
@@ -2472,12 +2498,28 @@ export default function FighterGame() {
             spawnExplosion(s.particles, sb.x, sb.y, ["#ffc9b0", "#ff5a3c", "#8a0f0f"], 14);
             playSmartBombPickupSound();
             const idx = s.players.findIndex((p) => p.id === pl.id);
-            if (s.enemies.length > 0) {
-              for (const en of s.enemies) {
+            // The boss is tough enough that it shouldn't be a free one-shot
+            // kill for a screen-clear pickup -- it takes heavy damage
+            // instead and survives unless that finishes it off.
+            const boss = s.enemies.find((en) => en.isBoss);
+            const regularEnemies = s.enemies.filter((en) => !en.isBoss);
+            if (regularEnemies.length > 0 || boss) {
+              for (const en of regularEnemies) {
                 spawnExplosion(s.particles, en.x, en.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"]);
                 if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 10;
               }
-              s.enemies = [];
+              s.enemies = boss ? [boss] : [];
+              if (boss) {
+                const damage = 12;
+                boss.hp = (boss.hp ?? 1) - damage;
+                spawnExplosion(s.particles, boss.x, boss.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], 20);
+                if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + damage * 2;
+                if (boss.hp <= 0) {
+                  s.enemies = [];
+                  spawnExplosion(s.particles, boss.x, boss.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], 40);
+                  if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 100;
+                }
+              }
               setScores([...scoresRef.current]);
               scoreRef.current = scoresRef.current.reduce((sum, v) => sum + (v ?? 0), 0);
               setScore(scoreRef.current);
@@ -2721,10 +2763,45 @@ export default function FighterGame() {
         c.translate(en.x, en.y);
         drawJetShadow(c, en.scale);
         c.rotate(Math.PI);
-        if (!USE_PLANE_SPRITES || !drawJetSprite(c, jetImagesRef.current.red, en.scale)) {
+        const sprite = en.isBoss ? jetImagesRef.current.monster : jetImagesRef.current.red;
+        if (!USE_PLANE_SPRITES || !drawJetSprite(c, sprite, en.scale)) {
           drawJet(c, en.scale, Math.abs(Math.sin(s.elapsed * 18 + en.phase)), ENEMY_SCHEME);
         }
         c.restore();
+
+        if (en.isBoss && en.maxHp) {
+          const barWidth = 90;
+          const barHeight = 7;
+          const bx = en.x - barWidth / 2;
+          const by = en.y - ENEMY_RADIUS * en.scale - 22;
+          const pct = clamp((en.hp ?? 0) / en.maxHp, 0, 1);
+          c.save();
+          c.fillStyle = "rgba(0,0,0,0.55)";
+          c.fillRect(bx - 2, by - 2, barWidth + 4, barHeight + 4);
+          c.fillStyle = "rgba(255,255,255,0.15)";
+          c.fillRect(bx, by, barWidth, barHeight);
+          c.fillStyle = pct > 0.3 ? "#f43f5e" : "#fbbf24";
+          c.fillRect(bx, by, barWidth * pct, barHeight);
+          c.restore();
+
+          // A shouted warning label above the bar -- a gentle pulse in
+          // scale keeps it feeling urgent without being distracting.
+          const pulse = 0.9 + Math.sin(s.elapsed * 6) * 0.1;
+          c.save();
+          c.translate(en.x, by - 26);
+          c.scale(pulse, pulse);
+          c.textAlign = "center";
+          c.textBaseline = "middle";
+          c.font = "900 14px sans-serif";
+          c.lineWidth = 3;
+          c.strokeStyle = "rgba(0,0,0,0.85)";
+          c.fillStyle = "#ff3b3b";
+          c.strokeText("BOSS IS HERE!!", 0, -9);
+          c.fillText("BOSS IS HERE!!", 0, -9);
+          c.strokeText("FINISH IT!!", 0, 9);
+          c.fillText("FINISH IT!!", 0, 9);
+          c.restore();
+        }
       }
 
       // players — bank eased from this client's own frame-to-frame x delta

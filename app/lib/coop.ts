@@ -99,6 +99,9 @@ export interface NetSnapshot {
     phase: number;
     amp: number;
     orbit?: { cx: number; cy: number; radius: number; angle: number; speed: number };
+    isBoss?: boolean;
+    hp?: number;
+    maxHp?: number;
   }[];
   missiles: { x: number; y: number; vx: number; vy: number }[];
   bombs: { x: number; y: number; vy: number; rot: number }[];
