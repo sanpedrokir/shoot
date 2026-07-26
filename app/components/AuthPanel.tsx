@@ -75,6 +75,10 @@ function AuthPanel(
   const [leaderboardChecked, setLeaderboardChecked] = useState(false);
   const [showAvatarPicker, setShowAvatarPicker] = useState(false);
   const [avatarSaving, setAvatarSaving] = useState(false);
+  // Sign-up is a two-step flow: nickname/password, then (once those are
+  // valid) an avatar pick before the account is actually created --
+  // "signup" only ever applies when mode === "register".
+  const [signupStep, setSignupStep] = useState<"form" | "avatar">("form");
 
   useEffect(() => {
     fetch("/api/auth/me", { cache: "no-store" })
@@ -110,10 +114,13 @@ function AuthPanel(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, nickname, password]);
 
-  const submit = async () => {
+  // avatarId is only ever passed from the sign-up avatar step below; login
+  // never sets one here (an existing account keeps whatever it already has).
+  const submit = async (avatarId?: string) => {
     setError("");
     if (!nickname.trim() || !password) {
       setError("Enter a nickname and password.");
+      setSignupStep("form");
       return;
     }
     setSubmitting(true);
@@ -132,29 +139,61 @@ function AuthPanel(
       const data = await res.json();
       if (!res.ok) {
         setError(data.error ?? "Something went wrong.");
+        setSignupStep("form");
         return;
+      }
+      let avatar: string | null = data.avatar;
+      if (avatarId) {
+        // Best-effort: the account already exists at this point regardless
+        // of whether this call succeeds, so a failure here just means they
+        // can still pick one later via the gear icon.
+        try {
+          const avRes = await fetch("/api/auth/avatar", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ avatar: avatarId }),
+          });
+          if (avRes.ok) avatar = avatarId;
+        } catch {
+          // ignore
+        }
       }
       const nextUser: AuthUser = {
         nickname: data.nickname,
         highScore: data.highScore,
         maxLevel: data.maxLevel,
-        avatar: data.avatar,
+        avatar,
       };
       setUser(nextUser);
       onUserChange(nextUser);
       setPassword("");
+      setSignupStep("form");
       storeLocalProgress(nextUser.highScore, nextUser.maxLevel);
     } catch {
       setError("Network error. Try again.");
+      setSignupStep("form");
     } finally {
       setSubmitting(false);
     }
+  };
+
+  // The sign-up form's own "Continue" button -- just moves to the avatar
+  // step client-side, no request yet (the account isn't created until an
+  // avatar is picked or skipped).
+  const goToAvatarStep = () => {
+    setError("");
+    if (!nickname.trim() || !password) {
+      setError("Enter a nickname and password.");
+      return;
+    }
+    setSignupStep("avatar");
   };
 
   const clearAndPlayAsGuest = () => {
     setNickname("");
     setPassword("");
     setError("");
+    setSignupStep("form");
   };
 
   useImperativeHandle(
@@ -263,6 +302,7 @@ function AuthPanel(
                 onClick={() => {
                   setMode(m);
                   setError("");
+                  setSignupStep("form");
                 }}
                 className={`rounded-full px-3 py-1 font-semibold transition-colors ${
                   mode === m ? "bg-red-600" : "text-white/70"
@@ -272,39 +312,72 @@ function AuthPanel(
               </button>
             ))}
           </div>
-          <input
-            value={nickname}
-            onChange={(e) => setNickname(e.target.value)}
-            placeholder="Nickname"
-            maxLength={20}
-            className="w-full rounded-lg bg-white/90 px-3 py-1.5 text-sm text-black"
-          />
-          <input
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            type="password"
-            placeholder="Password"
-            className="w-full rounded-lg bg-white/90 px-3 py-1.5 text-sm text-black"
-            onKeyDown={(e) => {
-              if (e.key === "Enter") submit();
-            }}
-          />
-          {error && <p className="text-xs text-red-200">{error}</p>}
-          <button
-            onClick={submit}
-            disabled={submitting}
-            className="mt-0.5 rounded-full bg-white/20 px-5 py-1.5 text-xs font-semibold disabled:opacity-50"
-          >
-            {submitting ? "…" : mode === "login" ? "Log In" : "Create Account"}
-          </button>
-          {hasPendingInput && (
-            <p className="text-center text-[11px] text-amber-200">
-              {mode === "login" ? "Log in" : "Create your account"} above to play under this name, or{" "}
-              <button onClick={clearAndPlayAsGuest} className="underline underline-offset-2">
-                clear to play as guest
+
+          {mode === "register" && signupStep === "avatar" ? (
+            <div className="flex w-full flex-col items-center gap-2">
+              <p className="text-xs font-semibold text-white/80">Pick your avatar</p>
+              <div className="flex flex-wrap justify-center gap-1.5">
+                {AVATAR_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.id}
+                    onClick={() => submit(opt.id)}
+                    disabled={submitting}
+                    aria-label={opt.label}
+                    className="rounded-full transition-transform active:scale-95 disabled:opacity-50"
+                  >
+                    <img src={opt.src} alt={opt.label} className="h-11 w-11 rounded-full" />
+                  </button>
+                ))}
+              </div>
+              {error && <p className="text-xs text-red-200">{error}</p>}
+              <div className="mt-0.5 flex gap-3 text-[11px]">
+                <button onClick={() => setSignupStep("form")} className="underline underline-offset-2">
+                  Back
+                </button>
+                <button onClick={() => submit()} disabled={submitting} className="underline underline-offset-2">
+                  {submitting ? "…" : "Skip for now"}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <input
+                value={nickname}
+                onChange={(e) => setNickname(e.target.value)}
+                placeholder="Nickname"
+                maxLength={20}
+                className="w-full rounded-lg bg-white/90 px-3 py-1.5 text-sm text-black"
+              />
+              <input
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                type="password"
+                placeholder="Password"
+                className="w-full rounded-lg bg-white/90 px-3 py-1.5 text-sm text-black"
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter") return;
+                  if (mode === "register") goToAvatarStep();
+                  else submit();
+                }}
+              />
+              {error && <p className="text-xs text-red-200">{error}</p>}
+              <button
+                onClick={() => (mode === "register" ? goToAvatarStep() : submit())}
+                disabled={submitting}
+                className="mt-0.5 rounded-full bg-white/20 px-5 py-1.5 text-xs font-semibold disabled:opacity-50"
+              >
+                {submitting ? "…" : mode === "login" ? "Log In" : "Continue"}
               </button>
-              .
-            </p>
+              {hasPendingInput && (
+                <p className="text-center text-[11px] text-amber-200">
+                  {mode === "login" ? "Log in" : "Create your account"} above to play under this name, or{" "}
+                  <button onClick={clearAndPlayAsGuest} className="underline underline-offset-2">
+                    clear to play as guest
+                  </button>
+                  .
+                </p>
+              )}
+            </>
           )}
         </div>
       ))}
