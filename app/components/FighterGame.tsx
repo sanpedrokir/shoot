@@ -1619,7 +1619,7 @@ export default function FighterGame() {
   const [levelTitleCard, setLevelTitleCard] = useState<{ level: number; location: string } | null>(null);
   useEffect(() => {
     if (!levelTitleCard) return;
-    const t = setTimeout(() => setLevelTitleCard(null), 2000);
+    const t = setTimeout(() => setLevelTitleCard(null), 2600);
     return () => clearTimeout(t);
   }, [levelTitleCard]);
 
@@ -3023,9 +3023,14 @@ export default function FighterGame() {
               s.ultimateCharge = Math.min(ULTIMATE_MAX, s.ultimateCharge + regularEnemies.length * 4);
               s.enemies = boss ? [boss] : [];
               if (boss) {
-                const damage = 12;
+                // A flat 12 damage was tuned back when the boss had ~150 max
+                // hp (an 8% chunk); now that hp scales into the hundreds/
+                // thousands (see the maxHp formula above), a flat number was
+                // reading as "no effect" -- a percentage keeps it feeling
+                // like a real hit at any level, without being a free kill.
+                const damage = Math.max(12, Math.round((boss.maxHp ?? 12) * 0.15));
                 boss.hp = (boss.hp ?? 1) - damage;
-                spawnExplosion(s.particles, boss.x, boss.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], 20);
+                spawnExplosion(s.particles, boss.x, boss.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], 36, 1.6);
                 if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + damage * 2;
                 if (boss.hp <= 0) {
                   s.enemies = [];
@@ -3217,10 +3222,18 @@ export default function FighterGame() {
             // ignore
           }
           if (userRef.current) {
+            // The server's max_level means "highest level unlocked", matching
+            // UNLOCKED_LEVEL_KEY's local semantics -- send nextLevel (the
+            // level this survive just unlocked), not s.level (the one just
+            // finished). Sending s.level here was the bug: it made the
+            // server always lag one level behind local progress, so the
+            // next handleUserChange (a session refresh, another device,
+            // even just a reload) would snap soloStartLevel/unlockedLevel
+            // back down to the level the player had already survived.
             fetch("/api/score", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ score: nb, level: s.level }),
+              body: JSON.stringify({ score: nb, level: nextLevel }),
             }).catch(() => {});
             setRefreshLeaderboardKey((k) => k + 1);
           }
@@ -3754,10 +3767,11 @@ export default function FighterGame() {
                 setBossChoiceVisible(true);
                 playPageFlipSound();
               }}
-              aria-label="Change boss firepower loadout"
-              className="pointer-events-auto rounded-lg bg-black/35 px-2.5 py-1.5 text-lg leading-none backdrop-blur-sm active:scale-95 transition-transform"
+              aria-label="Open firepower loadout chest"
+              className="pointer-events-auto flex flex-col items-center gap-0 rounded-lg border border-amber-300/60 bg-amber-500/25 px-2 py-1 leading-none shadow-[0_0_10px_2px_rgba(245,158,11,0.55)] backdrop-blur-sm active:scale-95 transition-transform animate-pulse"
             >
-              🔫
+              <span className="text-xl leading-none">📦</span>
+              <span className="text-[7px] font-bold uppercase tracking-wide text-amber-200">Loadout</span>
             </button>
           )}
           {status === "playing" && (
@@ -3879,17 +3893,21 @@ export default function FighterGame() {
       )}
 
       {levelTitleCard && status === "playing" && (
-        <div className="pointer-events-none absolute inset-x-0 top-[28%] z-40 flex flex-col items-center gap-1 font-sans">
-          <div
-            className="animate-pulse bg-gradient-to-b from-white via-sky-100 to-blue-400 bg-clip-text text-2xl uppercase tracking-wide text-transparent font-[family-name:var(--font-game)]"
-            style={{
-              WebkitTextStroke: "1.5px #071229",
-              textShadow: "0 3px 0 #071229, 0 0 16px rgba(56,132,255,0.85)",
-            }}
-          >
-            Level {levelTitleCard.level}
+        <div className="pointer-events-none absolute inset-x-0 top-[24%] z-40 flex flex-col items-center gap-1.5 font-sans">
+          <div className="rounded-2xl border border-sky-300/30 bg-black/55 px-6 py-3 text-center backdrop-blur-sm">
+            <div
+              className="text-6xl font-extrabold uppercase tracking-wide font-[family-name:var(--font-game)] text-sky-300"
+              style={{
+                WebkitTextStroke: "2.5px #071229",
+                textShadow: "0 4px 0 #071229, 0 0 22px rgba(56,132,255,0.95), 0 0 40px rgba(56,132,255,0.6)",
+              }}
+            >
+              Level {levelTitleCard.level}
+            </div>
+            <div className="mt-1 text-base font-bold uppercase tracking-[0.15em] text-white">
+              {levelTitleCard.location}
+            </div>
           </div>
-          <div className="text-sm font-semibold text-white/80">{levelTitleCard.location}</div>
         </div>
       )}
 
@@ -4396,12 +4414,12 @@ export default function FighterGame() {
       )}
 
       {status === "levelcomplete" && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/65 px-6 text-center text-white font-sans">
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/80 px-6 text-center text-white font-sans">
           <h2
-            className="bg-gradient-to-b from-white via-yellow-100 to-yellow-400 bg-clip-text text-4xl uppercase tracking-tight text-transparent font-[family-name:var(--font-game)]"
+            className="text-5xl uppercase tracking-tight font-[family-name:var(--font-game)] text-yellow-300"
             style={{
-              WebkitTextStroke: "1.5px #4a2e05",
-              textShadow: "0 3px 0 #4a2e05, 0 0 16px rgba(250,204,21,0.85), 0 0 30px rgba(250,204,21,0.55)",
+              WebkitTextStroke: "2px #2a1a03",
+              textShadow: "0 3px 0 #2a1a03, 0 0 18px rgba(250,204,21,0.9), 0 0 34px rgba(250,204,21,0.6)",
             }}
           >
             You Survived!
@@ -4413,10 +4431,10 @@ export default function FighterGame() {
                   🔓 New Location Unlocked
                 </span>
                 <p
-                  className="bg-gradient-to-b from-yellow-100 to-yellow-400 bg-clip-text text-xl uppercase tracking-wide text-transparent font-[family-name:var(--font-game)]"
+                  className="text-xl uppercase tracking-wide font-[family-name:var(--font-game)] text-yellow-300"
                   style={{
-                    WebkitTextStroke: "1px #4a2e05",
-                    textShadow: "0 2px 0 #4a2e05, 0 0 12px rgba(250,204,21,0.7)",
+                    WebkitTextStroke: "1px #2a1a03",
+                    textShadow: "0 2px 0 #2a1a03, 0 0 14px rgba(250,204,21,0.75)",
                   }}
                 >
                   {justUnlockedLocation}
