@@ -1706,6 +1706,11 @@ export default function FighterGame() {
               if (prevSnap) {
                 if (latestSnapshotRef.current.score > prevSnap.score) playEnemyHitSound();
                 if (latestSnapshotRef.current.shieldTotal > prevSnap.shieldTotal) playShieldPickupSound();
+                const gotRapidFire = latestSnapshotRef.current.players.some((pl) => {
+                  const prevPl = prevSnap.players.find((p) => p.id === pl.id);
+                  return prevPl && pl.rapidFireUntil > prevPl.rapidFireUntil;
+                });
+                if (gotRapidFire) playRapidFireSound();
               }
             }
             extrapolateAlly(s, dt);
@@ -1861,9 +1866,11 @@ export default function FighterGame() {
           targetY,
           invuln: np.invuln,
           fireTimer: 0,
-          // Host-simulation-only detail (drives bullet-spawn timing there,
-          // already reflected in the bullets the ally receives) — never
-          // networked, so this default is never actually read on the ally.
+          // Host-simulation-only detail for bullet-spawn timing, already
+          // reflected visually in the bullets the ally receives (rapid flag).
+          // The snapshot's own rapidFireUntil is read directly off `snap`
+          // above (for the pickup-sound diff) before this object is built,
+          // so this local copy staying 0 is harmless.
           rapidFireUntil: 0,
         };
       });
@@ -1937,6 +1944,7 @@ export default function FighterGame() {
           y: round1(pl.y),
           invuln: round1(pl.invuln),
           score: scoresRef.current[i] ?? 0,
+          rapidFireUntil: round1(pl.rapidFireUntil),
         })),
         enemies: s.enemies
           .slice(0, MAX_SNAPSHOT_ENTITIES)

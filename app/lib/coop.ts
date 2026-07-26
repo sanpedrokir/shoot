@@ -74,6 +74,10 @@ export interface NetPlayer {
   y: number;
   invuln: number;
   score: number;
+  // Only used by the ally client to detect "a Rapid Fire pickup just
+  // happened" (a rise since the last snapshot) so it can play the sound --
+  // not used for any visual/gameplay effect on the ally side.
+  rapidFireUntil: number;
 }
 
 export interface NetSnapshot {
