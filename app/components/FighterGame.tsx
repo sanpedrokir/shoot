@@ -3121,19 +3121,11 @@ export default function FighterGame() {
 
       {status === "ready" && !showLocations && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-5 overflow-y-auto bg-gradient-to-b from-black/25 via-black/45 to-black/75 px-6 py-8 text-center text-white font-sans">
-          <div className="flex flex-col items-center gap-1">
-            <span className="text-4xl drop-shadow-[0_0_18px_rgba(120,170,255,0.6)]">🛩️</span>
-            <h1
-              className="bg-gradient-to-b from-white via-sky-100 to-blue-400 bg-clip-text text-5xl font-black uppercase tracking-tight text-transparent sm:text-6xl"
-              style={{
-                WebkitTextStroke: "1.5px #071229",
-                textShadow: "0 3px 0 #071229, 0 0 18px rgba(56,132,255,0.85), 0 0 34px rgba(56,132,255,0.5)",
-              }}
-            >
-              Sky Raider
-            </h1>
-            <div className="h-0.5 w-32 bg-gradient-to-r from-transparent via-blue-400/80 to-transparent" />
-          </div>
+          <img
+            src="/brand/sky-raider-logo.webp"
+            alt="Sky Raider"
+            className="w-full max-w-[19rem] drop-shadow-[0_4px_24px_rgba(56,132,255,0.4)]"
+          />
 
           <div className="grid w-full max-w-xs grid-cols-3 gap-2.5">
             {(
@@ -3256,18 +3248,37 @@ export default function FighterGame() {
 
       {status === "levelcomplete" && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/65 px-6 text-center text-white font-sans">
-          <h2 className="text-3xl font-extrabold">You Survived!</h2>
+          <h2
+            className="bg-gradient-to-b from-white via-emerald-100 to-emerald-400 bg-clip-text text-4xl font-black uppercase tracking-tight text-transparent"
+            style={{
+              WebkitTextStroke: "1.5px #052e21",
+              textShadow: "0 3px 0 #052e21, 0 0 16px rgba(16,185,129,0.8), 0 0 30px rgba(16,185,129,0.5)",
+            }}
+          >
+            You Survived!
+          </h2>
           {isProgressiveRun && (
-            <div className="flex flex-col items-center gap-1.5">
-              <p className="text-sm font-semibold text-emerald-300">
-                🔓 New location unlocked: {justUnlockedLocation}
-              </p>
+            <div className="flex flex-col items-center gap-2">
+              <div className="flex flex-col items-center gap-0.5">
+                <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-300/80">
+                  🔓 New Location Unlocked
+                </span>
+                <p
+                  className="bg-gradient-to-b from-emerald-100 to-emerald-400 bg-clip-text text-xl font-black uppercase tracking-wide text-transparent"
+                  style={{
+                    WebkitTextStroke: "1px #052e21",
+                    textShadow: "0 2px 0 #052e21, 0 0 12px rgba(16,185,129,0.65)",
+                  }}
+                >
+                  {justUnlockedLocation}
+                </p>
+              </div>
               <button
                 onClick={() => {
                   setHighlightLocation(locationIndexForLevel(soloStartLevel));
                   setShowLocations(true);
                 }}
-                className="rounded-full bg-white/15 px-4 py-1.5 text-xs font-semibold active:scale-95 transition-transform"
+                className="rounded-full border-2 border-blue-400/70 bg-gradient-to-b from-blue-600/90 to-blue-900/90 px-5 py-2 text-sm font-bold shadow-[0_0_16px_2px_rgba(59,130,246,0.5)] active:scale-95 transition-transform"
               >
                 🗺️ View New Location
               </button>
@@ -3304,14 +3315,15 @@ export default function FighterGame() {
               </button>
             )
           )}
-          <div className="flex gap-4">
-            <button onClick={backToMenu} className="text-sm text-white/70 underline underline-offset-2">
-              Main Menu
-            </button>
-            <button onClick={handleQuit} className="text-sm text-white/70 underline underline-offset-2">
-              Quit Game
-            </button>
-          </div>
+          <button onClick={backToMenu} className="text-sm text-white/70 underline underline-offset-2">
+            Return Back
+          </button>
+          <button
+            onClick={handleQuit}
+            className="rounded-full border border-white/20 bg-white/10 px-6 py-2 text-sm font-semibold active:scale-95 transition-transform"
+          >
+            Quit Game
+          </button>
         </div>
       )}
 
