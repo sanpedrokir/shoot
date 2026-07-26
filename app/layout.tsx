@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono, Baloo_2 } from "next/font/google";
+import { Geist, Geist_Mono, Orbitron } from "next/font/google";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -12,13 +12,14 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
-// A rounded, friendly display face for in-game headlines (You Survived!,
-// location names, Game Over) -- the plain sans-serif read as flat/generic
-// for a game, this is the same style of face typical casual mobile games use.
-const gameDisplay = Baloo_2({
+// A bold, angular sci-fi display face for in-game headlines (You Survived!,
+// location names, Game Over, Level N) -- swapped out from a rounded/bubbly
+// casual-mobile-game font per explicit feedback that it looked "too ugly"/
+// cartoonish for an air-combat game.
+const gameDisplay = Orbitron({
   variable: "--font-game",
   subsets: ["latin"],
-  weight: ["600", "700", "800"],
+  weight: ["600", "700", "800", "900"],
 });
 
 export const metadata: Metadata = {
