@@ -14,7 +14,7 @@ import {
   type ChatMessage,
 } from "../lib/coop";
 import { createMusicPlayer, type MusicPlayer } from "../lib/musicPlayer";
-import { playPageFlipSound } from "../lib/sfx";
+import { playPageFlipSound, playEnemyHitSound, playShieldPickupSound, primeAudioContext } from "../lib/sfx";
 import AuthPanel, { type AuthUser, type LeaderboardTop } from "./AuthPanel";
 
 type Bullet = { x: number; y: number; vy: number; ownerId: string; rapid: boolean };
@@ -1311,6 +1311,7 @@ export default function FighterGame() {
   // one landing inside the browser's gesture window.
   useEffect(() => {
     const tryResumeMenuMusic = () => {
+      primeAudioContext();
       if (statusRef.current === "ready") {
         musicPlayerRef.current?.start(MENU_MUSIC_TRACK);
       }
@@ -1518,8 +1519,12 @@ export default function FighterGame() {
     setLobbyMode("solo");
     setNetRole("solo");
     netRoleRef.current = "solo";
+    statusRef.current = "ready";
     setStatus("ready");
-    musicPlayerRef.current?.stop();
+    // Started synchronously here (inside the click handler) rather than left
+    // to the status-reactive effect -- some mobile browsers only honor
+    // audio.play() when it's tied directly to the gesture's own call stack.
+    musicPlayerRef.current?.start(MENU_MUSIC_TRACK);
   };
 
   const handleQuit = () => {
@@ -2271,7 +2276,10 @@ export default function FighterGame() {
           }
         }
       }
-      if (deadEnemies.size) s.enemies = s.enemies.filter((en) => !deadEnemies.has(en));
+      if (deadEnemies.size) {
+        s.enemies = s.enemies.filter((en) => !deadEnemies.has(en));
+        playEnemyHitSound();
+      }
       if (deadBullets.size) s.bullets = s.bullets.filter((b) => !deadBullets.has(b));
       if (scored) {
         setScores([...scoresRef.current]);
@@ -2297,6 +2305,7 @@ export default function FighterGame() {
         for (const sh of collectedShields) {
           spawnExplosion(s.particles, sh.x, sh.y, ["#ffd75e", "#fff3c0", "#c98a1f"], 10);
         }
+        playShieldPickupSound();
         const prevTotal = shieldTotalRef.current;
         const newTotal = prevTotal + collectedShields.size * SHIELD_VALUE;
         shieldTotalRef.current = newTotal;
@@ -2754,49 +2763,56 @@ export default function FighterGame() {
       <canvas ref={canvasRef} className="absolute inset-0 block" />
 
       <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex items-start justify-between p-3 sm:p-4 text-white font-sans">
-        {netRole === "solo" ? (
-          <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
-            <div className="text-xs uppercase tracking-wide text-white/60">Score</div>
-            <div className="text-lg font-bold tabular-nums leading-tight">{score}</div>
-            {lobbyMode === "solo" && (
-              <div className="max-w-[8rem] truncate text-[10px] text-white/50">
-                📍 {getLocationName(locationIndexForLevel(soloStartLevel))}
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="flex gap-1.5">
+        {status !== "ready" &&
+          (netRole === "solo" ? (
             <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
-              <div className="text-xs uppercase tracking-wide text-white/60">Host</div>
-              <div className="text-lg font-bold tabular-nums leading-tight">{scores[0] ?? 0}</div>
+              <div className="text-xs uppercase tracking-wide text-white/60">Score</div>
+              <div className="text-lg font-bold tabular-nums leading-tight">{score}</div>
+              {lobbyMode === "solo" && (
+                <div className="max-w-[8rem] truncate text-[10px] text-white/50">
+                  📍 {getLocationName(locationIndexForLevel(soloStartLevel))}
+                </div>
+              )}
             </div>
-            <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
-              <div className="text-xs uppercase tracking-wide text-white/60">Ally</div>
-              <div className="text-lg font-bold tabular-nums leading-tight">{scores[1] ?? 0}</div>
+          ) : (
+            <div className="flex gap-1.5">
+              <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
+                <div className="text-xs uppercase tracking-wide text-white/60">Host</div>
+                <div className="text-lg font-bold tabular-nums leading-tight">{scores[0] ?? 0}</div>
+              </div>
+              <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
+                <div className="text-xs uppercase tracking-wide text-white/60">Ally</div>
+                <div className="text-lg font-bold tabular-nums leading-tight">{scores[1] ?? 0}</div>
+              </div>
+            </div>
+          ))}
+        {status !== "ready" && (
+          <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm text-center">
+            <div className="text-xs uppercase tracking-wide text-white/60">Best Score</div>
+            <div className="text-lg font-bold tabular-nums leading-tight">{best}</div>
+          </div>
+        )}
+        {status !== "ready" && (
+          <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm text-center">
+            <div className="text-xs uppercase tracking-wide text-white/60">Time</div>
+            <div ref={timerValueRef} className="text-lg font-bold tabular-nums leading-tight">
+              0:00
             </div>
           </div>
         )}
-        <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm text-center">
-          <div className="text-xs uppercase tracking-wide text-white/60">Best Score</div>
-          <div className="text-lg font-bold tabular-nums leading-tight">{best}</div>
-        </div>
-        <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm text-center">
-          <div className="text-xs uppercase tracking-wide text-white/60">Time</div>
-          <div ref={timerValueRef} className="text-lg font-bold tabular-nums leading-tight">
-            0:00
-          </div>
-        </div>
         <div className="flex items-start gap-1.5">
-          <div className="flex gap-1.5 rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
-            {Array.from({ length: maxLives }, (_, i) => (
-              <span
-                key={i}
-                className={`text-lg leading-none ${i < lives ? "opacity-100" : "opacity-25"}`}
-              >
-                &#9992;
-              </span>
-            ))}
-          </div>
+          {status !== "ready" && (
+            <div className="flex gap-1.5 rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
+              {Array.from({ length: maxLives }, (_, i) => (
+                <span
+                  key={i}
+                  className={`text-lg leading-none ${i < lives ? "opacity-100" : "opacity-25"}`}
+                >
+                  &#9992;
+                </span>
+              ))}
+            </div>
+          )}
           {status === "ready" && lobbyMode === "solo" && (
             <button
               onClick={() => setShowLocations(true)}
@@ -2884,6 +2900,9 @@ export default function FighterGame() {
               onClick={() => {
                 setShowLocations(false);
                 setHighlightLocation(null);
+                if (statusRef.current === "ready") {
+                  musicPlayerRef.current?.start(MENU_MUSIC_TRACK);
+                }
               }}
               aria-label="Close"
               className="rounded-full bg-white/10 px-3 py-1.5 text-sm font-semibold active:scale-95 transition-transform"
@@ -3151,22 +3170,24 @@ export default function FighterGame() {
               const active = lobbyMode === m;
               const accentClasses: Record<"blue" | "amber" | "violet", string> = {
                 blue: active
-                  ? "border-blue-400 bg-gradient-to-b from-blue-600/90 to-blue-900/90 shadow-[0_0_18px_2px_rgba(59,130,246,0.55)] text-white"
-                  : "border-blue-400/30 bg-white/5 text-white/70 hover:border-blue-400/60",
+                  ? "border-blue-400 bg-gradient-to-b from-blue-500 to-blue-800 shadow-[0_0_18px_2px_rgba(59,130,246,0.55),inset_0_1px_0_rgba(255,255,255,0.35),inset_0_-8px_12px_rgba(0,0,0,0.35),0_8px_12px_-4px_rgba(0,0,0,0.6)] text-white"
+                  : "border-blue-400/30 bg-gradient-to-b from-white/10 to-white/0 text-white/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_4px_8px_-4px_rgba(0,0,0,0.55)] hover:border-blue-400/60",
                 amber: active
-                  ? "border-amber-400 bg-gradient-to-b from-amber-500/90 to-amber-800/90 shadow-[0_0_18px_2px_rgba(245,158,11,0.55)] text-white"
-                  : "border-amber-400/30 bg-white/5 text-white/70 hover:border-amber-400/60",
+                  ? "border-amber-400 bg-gradient-to-b from-amber-400 to-amber-800 shadow-[0_0_18px_2px_rgba(245,158,11,0.55),inset_0_1px_0_rgba(255,255,255,0.35),inset_0_-8px_12px_rgba(0,0,0,0.35),0_8px_12px_-4px_rgba(0,0,0,0.6)] text-white"
+                  : "border-amber-400/30 bg-gradient-to-b from-white/10 to-white/0 text-white/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_4px_8px_-4px_rgba(0,0,0,0.55)] hover:border-amber-400/60",
                 violet: active
-                  ? "border-violet-400 bg-gradient-to-b from-violet-600/90 to-violet-900/90 shadow-[0_0_18px_2px_rgba(139,92,246,0.55)] text-white"
-                  : "border-violet-400/30 bg-white/5 text-white/70 hover:border-violet-400/60",
+                  ? "border-violet-400 bg-gradient-to-b from-violet-500 to-violet-800 shadow-[0_0_18px_2px_rgba(139,92,246,0.55),inset_0_1px_0_rgba(255,255,255,0.35),inset_0_-8px_12px_rgba(0,0,0,0.35),0_8px_12px_-4px_rgba(0,0,0,0.6)] text-white"
+                  : "border-violet-400/30 bg-gradient-to-b from-white/10 to-white/0 text-white/70 shadow-[inset_0_1px_0_rgba(255,255,255,0.12),0_4px_8px_-4px_rgba(0,0,0,0.55)] hover:border-violet-400/60",
               };
               return (
                 <button
                   key={m}
                   onClick={() => selectLobbyMode(m)}
-                  className={`flex flex-col items-center gap-1 rounded-2xl border-2 px-3 py-3.5 text-sm font-bold transition-all active:scale-95 ${accentClasses[accent]}`}
+                  className={`flex flex-col items-center gap-1.5 rounded-2xl border-2 px-3 py-3.5 text-sm font-bold transition-all active:scale-95 active:translate-y-0.5 ${accentClasses[accent]}`}
                 >
-                  <span className="text-xl leading-none">{icon}</span>
+                  <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-black/25 text-xl leading-none shadow-[inset_0_1px_0_rgba(255,255,255,0.3),inset_0_-2px_4px_rgba(0,0,0,0.45)]">
+                    {icon}
+                  </span>
                   {label}
                 </button>
               );
@@ -3250,7 +3271,7 @@ export default function FighterGame() {
               <button
                 onClick={handleStart}
                 disabled={authPending}
-                className="relative rounded-full border-2 border-amber-300/80 bg-gradient-to-b from-amber-300 via-amber-500 to-amber-700 px-10 py-3 text-lg font-extrabold tracking-wide text-amber-950 shadow-[0_4px_0_0_rgba(120,53,15,0.9),0_10px_24px_-4px_rgba(245,158,11,0.6)] transition-all active:translate-y-0.5 active:shadow-[0_1px_0_0_rgba(120,53,15,0.9)] disabled:opacity-40 disabled:active:translate-y-0"
+                className="relative rounded-full border-2 border-amber-300/80 bg-gradient-to-b from-amber-300 via-amber-500 to-amber-700 px-10 py-3 text-lg font-extrabold tracking-wide text-amber-950 shadow-[inset_0_2px_0_rgba(255,255,255,0.5),inset_0_-6px_10px_rgba(120,53,15,0.35),0_4px_0_0_rgba(120,53,15,0.9),0_10px_24px_-4px_rgba(245,158,11,0.6)] transition-all active:translate-y-0.5 active:shadow-[0_1px_0_0_rgba(120,53,15,0.9)] disabled:opacity-40 disabled:active:translate-y-0"
               >
                 🛩️ Start
               </button>

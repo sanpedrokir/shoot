@@ -181,10 +181,14 @@ export default function AuthPanel({ onUserChange, refreshLeaderboardKey, onTopCh
   return (
     <div className="flex flex-col items-center gap-2 text-white">
       {leaderboardChecked && (
-        <p className="flex items-center gap-1.5 rounded-full bg-black/30 px-4 py-1.5 text-base font-bold text-yellow-300">
+        <p className="flex items-center gap-1.5 rounded-full border border-yellow-400/30 bg-black/30 px-4 py-1.5 text-base font-bold text-yellow-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.1),0_4px_10px_-4px_rgba(0,0,0,0.6)]">
           {top ? (
             <>
-              <img src={avatarSrcFor(top.avatar)} alt="" className="h-5 w-5 rounded-full" />
+              <img
+                src={avatarSrcFor(top.avatar)}
+                alt=""
+                className="h-5 w-5 rounded-full ring-1 ring-yellow-300/60"
+              />
               🏆 {top.nickname} — {top.highScore}
             </>
           ) : (
@@ -196,7 +200,12 @@ export default function AuthPanel({ onUserChange, refreshLeaderboardKey, onTopCh
       {checkedSession && (user ? (
         <div className="flex flex-col items-center gap-1.5">
           <div className="flex items-center gap-2 text-xs text-white/70">
-            <img src={avatarSrcFor(user.avatar)} alt="" className="h-6 w-6 rounded-full" />
+            <img
+              src={avatarSrcFor(user.avatar)}
+              alt=""
+              className="h-6 w-6 rounded-full ring-1 ring-white/30"
+            />
+            <span className="font-semibold text-white">{user.nickname}</span>
             <button onClick={logout} className="underline underline-offset-2">
               Logout
             </button>

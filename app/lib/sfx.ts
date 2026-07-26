@@ -13,6 +13,14 @@ function getContext(): AudioContext | null {
   return ctx;
 }
 
+// Called from the same early page-wide gesture listener that unlocks music,
+// so the shared AudioContext is already created/resumed well before the
+// first in-game hit/pickup sound is needed (those fire from the RAF game
+// loop, not from a click handler, so they can't reliably unlock it themselves).
+export function primeAudioContext() {
+  getContext();
+}
+
 // A quick filtered-noise "swish" with a downward frequency sweep — reads as
 // a page turning rather than a generic UI click. Called directly from a
 // click handler, so the AudioContext creation/resume above rides the same
@@ -50,5 +58,74 @@ export function playPageFlipSound() {
     noise.stop(now + duration);
   } catch {
     // Sound is a nice-to-have — never let it block navigation.
+  }
+}
+
+// A quick descending "zap" for an enemy plane going down -- a square-wave
+// blip falling in pitch plus a short noise crackle for impact, rather than
+// one clean tone, so it reads as a hit rather than a UI beep.
+export function playEnemyHitSound() {
+  const audioCtx = getContext();
+  if (!audioCtx) return;
+  try {
+    const duration = 0.16;
+    const now = audioCtx.currentTime;
+
+    const osc = audioCtx.createOscillator();
+    osc.type = "square";
+    osc.frequency.setValueAtTime(520, now);
+    osc.frequency.exponentialRampToValueAtTime(80, now + duration);
+
+    const oscGain = audioCtx.createGain();
+    oscGain.gain.setValueAtTime(0.18, now);
+    oscGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+
+    osc.connect(oscGain);
+    oscGain.connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + duration);
+
+    const crackleSize = Math.floor(audioCtx.sampleRate * 0.05);
+    const crackleBuffer = audioCtx.createBuffer(1, crackleSize, audioCtx.sampleRate);
+    const data = crackleBuffer.getChannelData(0);
+    for (let i = 0; i < crackleSize; i++) data[i] = Math.random() * 2 - 1;
+    const crackle = audioCtx.createBufferSource();
+    crackle.buffer = crackleBuffer;
+    const crackleGain = audioCtx.createGain();
+    crackleGain.gain.setValueAtTime(0.22, now);
+    crackleGain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+    crackle.connect(crackleGain);
+    crackleGain.connect(audioCtx.destination);
+    crackle.start(now);
+  } catch {
+    // Sound is a nice-to-have — never let it block gameplay.
+  }
+}
+
+// A bright two-note upward chime for collecting a shield -- reads as a
+// reward pickup rather than a hit or a UI click.
+export function playShieldPickupSound() {
+  const audioCtx = getContext();
+  if (!audioCtx) return;
+  try {
+    const now = audioCtx.currentTime;
+    const notes = [660, 990];
+    notes.forEach((freq, i) => {
+      const start = now + i * 0.08;
+      const duration = 0.14;
+      const osc = audioCtx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq, start);
+      const gain = audioCtx.createGain();
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(0.25, start + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + duration);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(start);
+      osc.stop(start + duration);
+    });
+  } catch {
+    // Sound is a nice-to-have — never let it block gameplay.
   }
 }
