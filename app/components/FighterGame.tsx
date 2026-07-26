@@ -298,6 +298,11 @@ const MAX_SNAPSHOT_ENTITIES = 40;
 // levels, and without this the bullet-vs-enemy collision pass (O(bullets ×
 // enemies) every frame) could grow unbounded over a very long/deep run.
 const MAX_LIVE_ENEMIES = 60;
+// If the boss goes down early (well before the level timer runs out), don't
+// leave the player idling through an empty sky for however much time was
+// left -- cap the rest of the run to a short victory lap so "You Survived!"
+// follows shortly after the kill instead of after a long empty wait.
+const BOSS_EARLY_KILL_VICTORY_LAP = 4;
 // Shared ultimate meter: fills from kills, either player can fire it once
 // full (see the client-ultimate wire message for how the ally's tap reaches
 // the host, the only client that actually simulates).
@@ -2646,21 +2651,21 @@ export default function FighterGame() {
         }
       }
 
-      // Boss: with 45 seconds left on the clock, every regular enemy is
+      // Boss: with 60 seconds left on the clock, every regular enemy is
       // cleared out and a single massive "monster" plane takes their place —
       // fixed in one spot (no drift/orbit at all), so it's a clean, focused
       // shooting gallery rather than something that has to be chased or that
       // gets lost in a crowd of other planes. Levels run 3-5 minutes, so a
-      // 45s window is a meatier finale than the original 25s -- enough time
-      // to actually make use of a loadout switch or two (see the "change
-      // loadout" HUD button) rather than a blink-and-it's-over ending. It
-      // takes many hits instead of one (bullet damage decrements hp in the
-      // collision pass below), fires far more aggressively than a regular
-      // enemy, and stays until the player brings it down or time runs out
-      // (no respawn if it's destroyed early -- that's the reward for doing
-      // it). Every player gets a firepower boost the moment it arrives (see
+      // full minute is a real finale act -- plenty of time to actually make
+      // use of a loadout switch or two (see the "change loadout" HUD
+      // button) rather than a blink-and-it's-over ending. It takes many
+      // hits instead of one (bullet damage decrements hp in the collision
+      // pass below), fires far more aggressively than a regular enemy, and
+      // stays until the player brings it down or time runs out (no respawn
+      // if it's destroyed early -- see the early-kill wrap-up below).
+      // Every player gets a firepower boost the moment it arrives (see
       // bossActive above) so it's a real fight, not a stalemate.
-      if (!s.bossSpawned && timeLeft <= 45) {
+      if (!s.bossSpawned && timeLeft <= 60) {
         s.bossSpawned = true;
         s.enemies = [];
         // Tuned against the player's actual sustained boss-fight dps (the
@@ -2907,6 +2912,7 @@ export default function FighterGame() {
                   if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 100;
                   setBossFightActive(false);
                   setBossChoiceVisible(false);
+                  s.levelDuration = Math.min(s.levelDuration, s.elapsed + BOSS_EARLY_KILL_VICTORY_LAP);
                 }
               }
             } else {
@@ -3035,6 +3041,7 @@ export default function FighterGame() {
                   lifetimeStatsRef.current.bossKills += 1;
                   setBossFightActive(false);
                   setBossChoiceVisible(false);
+                  s.levelDuration = Math.min(s.levelDuration, s.elapsed + BOSS_EARLY_KILL_VICTORY_LAP);
                 }
               }
               setScores([...scoresRef.current]);
