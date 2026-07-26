@@ -144,6 +144,12 @@ interface GameState {
   bombsSuppressedUntil: number;
   // Same host/solo-only pattern for the final-15-seconds boss.
   bossSpawned: boolean;
+  // Co-op only: when the shared life pool would hit 0, the player who took
+  // that hit goes "down" (safe, can't fire) instead of the game ending
+  // immediately -- their teammate has reviveDeadline to fly over and
+  // revive them. Null means nobody's currently down.
+  downedPlayerId: string | null;
+  reviveDeadline: number;
   // Once per level, only on a milestone level (multiple of 5) -- the elite
   // enemy spawns alongside the midpoint wave.
   eliteSpawned: boolean;
@@ -655,6 +661,8 @@ function makeInitialState(
     bombsSuppressedUntil: 0,
     bossSpawned: false,
     eliteSpawned: false,
+    downedPlayerId: null,
+    reviveDeadline: 0,
     shakeUntil: 0,
     shakeMagnitude: 0,
   };
@@ -2155,6 +2163,7 @@ export default function FighterGame() {
       s.level = snap.level;
       s.levelDuration = snap.levelDuration;
       s.elapsed = snap.elapsed;
+      s.downedPlayerId = snap.downedPlayerId;
       const wantLocation = locationIndexForLevel(snap.level);
       if (s.locationTheme.index !== wantLocation) {
         s.locationTheme = getLocationTheme(wantLocation, s.width, s.height);
@@ -2249,6 +2258,7 @@ export default function FighterGame() {
         score: scoreRef.current,
         lives: livesRef.current,
         shieldTotal: shieldTotalRef.current,
+        downedPlayerId: s.downedPlayerId,
         players: s.players.map((pl, i) => ({
           id: pl.id,
           x: round1(pl.x),
@@ -2308,6 +2318,31 @@ export default function FighterGame() {
     }
 
     function update(s: GameState, dt: number) {
+      // Shared by the direct team-wipe path and the revive-timeout path
+      // below -- both need the exact same "end the run" sequence.
+      const triggerGameOver = () => {
+        statusRef.current = "gameover";
+        setStatus("gameover");
+        musicPlayerRef.current?.stop();
+        setBest((b) => {
+          const nb = Math.max(b, scoreRef.current);
+          try {
+            window.localStorage.setItem("skyfighter-best", String(nb));
+          } catch {
+            // ignore
+          }
+          if (userRef.current) {
+            fetch("/api/score", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ score: nb, level: s.level }),
+            }).catch(() => {});
+            setRefreshLeaderboardKey((k) => k + 1);
+          }
+          return nb;
+        });
+      };
+
       s.elapsed += dt;
 
       // Keyboard input only ever drives this device's own player entity;
@@ -2343,6 +2378,7 @@ export default function FighterGame() {
       // is active.
       const bossActive = s.enemies.some((e) => e.isBoss);
       for (const pl of s.players) {
+        if (pl.id === s.downedPlayerId) continue;
         pl.fireTimer -= dt;
         if (pl.fireTimer <= 0) {
           const rapid = bossActive || s.elapsed < pl.rapidFireUntil;
@@ -2771,6 +2807,14 @@ export default function FighterGame() {
         if (livesToRestore > 0) {
           setLives((lv) => Math.min(maxLivesRef.current, lv + livesToRestore));
           const healInvuln = healInvulnDuration(newTotal);
+          // A shield restoring the team's life pool is also a valid revive
+          // -- the healed player shouldn't stay stuck at "downed" with 1e9
+          // invuln once there's actually a life to spend again.
+          if (s.downedPlayerId) {
+            const downed = s.players.find((p) => p.id === s.downedPlayerId);
+            if (downed) downed.invuln = healInvuln;
+            s.downedPlayerId = null;
+          }
           for (const pl of s.players) {
             pl.invuln = Math.max(pl.invuln, healInvuln);
           }
@@ -2881,29 +2925,45 @@ export default function FighterGame() {
           setLives((lv) => {
             const next = lv - 1;
             if (next <= 0) {
-              statusRef.current = "gameover";
-              setStatus("gameover");
-              musicPlayerRef.current?.stop();
-              setBest((b) => {
-                const nb = Math.max(b, scoreRef.current);
-                try {
-                  window.localStorage.setItem("skyfighter-best", String(nb));
-                } catch {
-                  // ignore
-                }
-                if (userRef.current) {
-                  fetch("/api/score", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ score: nb, level: s.level }),
-                  }).catch(() => {});
-                  setRefreshLeaderboardKey((k) => k + 1);
-                }
-                return nb;
-              });
+              // Co-op: the first team-wipe hit goes down instead of ending
+              // the game outright, giving the teammate a window to fly
+              // over and revive. A second team-wipe hit (nobody left to
+              // revive, or the reviver also just got hit) is the real end.
+              if (s.players.length > 1 && !s.downedPlayerId) {
+                s.downedPlayerId = pl.id;
+                s.reviveDeadline = s.elapsed + 8;
+                pl.invuln = 1e9;
+                return 0;
+              }
+              triggerGameOver();
             }
             return next;
           });
+        }
+      }
+
+      // Co-op revive window: fly the surviving teammate close to whoever
+      // just went down to bring them back with 1 life; let the window run
+      // out (or lose the only other player) and it's game over for real.
+      if (s.downedPlayerId) {
+        const downed = s.players.find((p) => p.id === s.downedPlayerId);
+        const reviver = s.players.find((p) => p.id !== s.downedPlayerId);
+        if (downed && reviver) {
+          const reviveRadius = 40;
+          if (dist2(downed.x, downed.y, reviver.x, reviver.y) < reviveRadius * reviveRadius) {
+            s.downedPlayerId = null;
+            downed.invuln = INVULN_TIME;
+            setLives(() => Math.min(maxLivesRef.current, 1));
+            spawnExplosion(s.particles, downed.x, downed.y, ["#8fd3ff", "#ffffff", "#34d399"], 30);
+            triggerShake(s, 6, 0.3);
+            playShieldPickupSound();
+          } else if (s.elapsed >= s.reviveDeadline) {
+            s.downedPlayerId = null;
+            triggerGameOver();
+          }
+        } else {
+          s.downedPlayerId = null;
+          triggerGameOver();
         }
       }
 
@@ -3163,7 +3223,11 @@ export default function FighterGame() {
       // a local visual touch that isn't networked or gameplay-affecting.
       if (currentStatus !== "gameover") {
         s.players.forEach((pl, i) => {
-          const flashHidden = pl.invuln > 0 && Math.floor(pl.invuln * 10) % 2 === 0;
+          const isDowned = pl.id === s.downedPlayerId;
+          // A downed teammate always stays visible (dimmed instead) so the
+          // reviver always knows exactly where to fly -- the normal
+          // invuln flash-hide would otherwise make them disappear.
+          const flashHidden = !isDowned && pl.invuln > 0 && Math.floor(pl.invuln * 10) % 2 === 0;
           if (flashHidden) return;
           const prevX = playerLastXRef.current.get(pl.id) ?? pl.x;
           const targetBank = clamp((pl.x - prevX) * 0.07, -0.5, 0.5);
@@ -3173,6 +3237,7 @@ export default function FighterGame() {
           playerBankRef.current.set(pl.id, bank);
           c.save();
           c.translate(pl.x, pl.y);
+          if (isDowned) c.globalAlpha = 0.45;
           drawJetShadow(c, 1);
           c.rotate(bank);
           const spriteKey = PLAYER_SPRITE_KEYS[i % PLAYER_SPRITE_KEYS.length];
@@ -3180,6 +3245,29 @@ export default function FighterGame() {
             drawJet(c, 1, Math.abs(Math.sin(s.elapsed * 22)), PLAYER_SCHEMES[i % PLAYER_SCHEMES.length]);
           }
           c.restore();
+
+          if (isDowned) {
+            const pulse = 0.85 + Math.sin(s.elapsed * 5) * 0.15;
+            c.save();
+            c.translate(pl.x, pl.y);
+            c.scale(pulse, pulse);
+            c.beginPath();
+            c.arc(0, 0, 26, 0, Math.PI * 2);
+            c.strokeStyle = "rgba(52,211,153,0.85)";
+            c.lineWidth = 2.5;
+            c.stroke();
+            c.restore();
+            c.save();
+            c.textAlign = "center";
+            c.textBaseline = "middle";
+            c.font = "800 11px sans-serif";
+            c.lineWidth = 3;
+            c.strokeStyle = "rgba(0,0,0,0.85)";
+            c.fillStyle = "#34d399";
+            c.strokeText("DOWNED — fly here!", pl.x, pl.y - 34);
+            c.fillText("DOWNED — fly here!", pl.x, pl.y - 34);
+            c.restore();
+          }
         });
       }
 
@@ -4077,7 +4165,7 @@ export default function FighterGame() {
               textShadow: "0 3px 0 #4a0505, 0 0 16px rgba(244,63,94,0.85), 0 0 30px rgba(244,63,94,0.5)",
             }}
           >
-            {isAlly && hostLeft ? "Host Disconnected" : "Plane Shot Down!"}
+            {isAlly && hostLeft ? "Host Disconnected" : "Plane Downed!!"}
           </h2>
           <p className="text-lg">
             Your Score: <span className="font-bold">{score.toLocaleString()}</span>

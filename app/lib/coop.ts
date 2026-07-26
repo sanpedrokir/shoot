@@ -90,6 +90,9 @@ export interface NetSnapshot {
   score: number;
   lives: number;
   shieldTotal: number;
+  // Co-op revive: which player id (if any) is currently down, waiting for
+  // their teammate to fly close enough to revive them.
+  downedPlayerId: string | null;
   players: NetPlayer[];
   enemies: {
     x: number;
