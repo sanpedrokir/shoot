@@ -2710,18 +2710,30 @@ export default function FighterGame() {
           const dx = nearest.x - en.x;
           const dy = nearest.y - en.y;
           const len = Math.hypot(dx, dy) || 1;
-          // The boss fires from twin cannons instead of a single nose gun —
-          // reads as a real barrage rather than the occasional pot-shot a
-          // regular enemy takes.
-          const muzzles = en.isBoss ? [-20, 20] : [0];
-          for (const mx of muzzles) {
-            s.missiles.push({
-              x: en.x + mx,
-              y: en.y + 10,
-              vy: (dy / len) * 190 + 80,
-              vx: (dx / len) * 100,
-              fromBoss: en.isBoss,
-            });
+          if (en.isBoss) {
+            // A fixed twin-cannon shot aimed dead at the player looked like
+            // it was "firing in one direction" every time -- especially
+            // since the boss never moves and the player often barely does
+            // either, so the aim angle barely changed shot to shot. Firing
+            // a randomized fan (shot count, spread angle, and per-shot
+            // origin across the wingspan all vary every volley) instead of
+            // two perfectly parallel bolts makes every burst look distinct.
+            const aimAngle = Math.atan2(dy, dx);
+            const shotCount = 3 + Math.floor(Math.random() * 3);
+            const totalSpread = ((20 + Math.random() * 55) * Math.PI) / 180;
+            for (let i = 0; i < shotCount; i++) {
+              const t = shotCount === 1 ? 0 : i / (shotCount - 1) - 0.5;
+              const angle = aimAngle + t * totalSpread;
+              s.missiles.push({
+                x: en.x + t * 44,
+                y: en.y + 10,
+                vy: Math.sin(angle) * 190 + 80,
+                vx: Math.cos(angle) * 100,
+                fromBoss: true,
+              });
+            }
+          } else {
+            s.missiles.push({ x: en.x, y: en.y + 10, vy: (dy / len) * 190 + 80, vx: (dx / len) * 100 });
           }
         }
         en.bombTimer -= dt;

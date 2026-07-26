@@ -61,42 +61,70 @@ export function playPageFlipSound() {
   }
 }
 
-// A quick descending "zap" for an enemy plane going down -- a square-wave
-// blip falling in pitch plus a short noise crackle for impact, rather than
-// one clean tone, so it reads as a hit rather than a UI beep.
+// A punchy impact for an enemy plane going down -- three layered noise/tone
+// bursts (a sharp high-frequency "crack" transient, a low sine "thump" for
+// body, and a lower-passed noise "debris" tail) instead of a single clean
+// tonal sweep, so it reads as a real hit/impact rather than a retro laser
+// zap (the previous square-wave-sweep version read as too synthetic).
 export function playEnemyHitSound() {
   const audioCtx = getContext();
   if (!audioCtx) return;
   try {
-    const duration = 0.16;
     const now = audioCtx.currentTime;
 
-    const osc = audioCtx.createOscillator();
-    osc.type = "square";
-    osc.frequency.setValueAtTime(520, now);
-    osc.frequency.exponentialRampToValueAtTime(80, now + duration);
+    // Crack: the instant of impact -- a very short, sharp burst of
+    // high-passed noise.
+    const crackDuration = 0.05;
+    const crackSize = Math.floor(audioCtx.sampleRate * crackDuration);
+    const crackBuffer = audioCtx.createBuffer(1, crackSize, audioCtx.sampleRate);
+    const crackData = crackBuffer.getChannelData(0);
+    for (let i = 0; i < crackSize; i++) crackData[i] = Math.random() * 2 - 1;
+    const crack = audioCtx.createBufferSource();
+    crack.buffer = crackBuffer;
+    const crackFilter = audioCtx.createBiquadFilter();
+    crackFilter.type = "highpass";
+    crackFilter.frequency.setValueAtTime(2200, now);
+    const crackGain = audioCtx.createGain();
+    crackGain.gain.setValueAtTime(0.4, now);
+    crackGain.gain.exponentialRampToValueAtTime(0.001, now + crackDuration);
+    crack.connect(crackFilter);
+    crackFilter.connect(crackGain);
+    crackGain.connect(audioCtx.destination);
+    crack.start(now);
 
-    const oscGain = audioCtx.createGain();
-    oscGain.gain.setValueAtTime(0.18, now);
-    oscGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+    // Thump: a brief low-frequency pulse for body/punch underneath the crack.
+    const thump = audioCtx.createOscillator();
+    thump.type = "sine";
+    thump.frequency.setValueAtTime(150, now);
+    thump.frequency.exponentialRampToValueAtTime(45, now + 0.09);
+    const thumpGain = audioCtx.createGain();
+    thumpGain.gain.setValueAtTime(0.35, now);
+    thumpGain.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+    thump.connect(thumpGain);
+    thumpGain.connect(audioCtx.destination);
+    thump.start(now);
+    thump.stop(now + 0.1);
 
-    osc.connect(oscGain);
-    oscGain.connect(audioCtx.destination);
-    osc.start(now);
-    osc.stop(now + duration);
-
-    const crackleSize = Math.floor(audioCtx.sampleRate * 0.05);
-    const crackleBuffer = audioCtx.createBuffer(1, crackleSize, audioCtx.sampleRate);
-    const data = crackleBuffer.getChannelData(0);
-    for (let i = 0; i < crackleSize; i++) data[i] = Math.random() * 2 - 1;
-    const crackle = audioCtx.createBufferSource();
-    crackle.buffer = crackleBuffer;
-    const crackleGain = audioCtx.createGain();
-    crackleGain.gain.setValueAtTime(0.22, now);
-    crackleGain.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
-    crackle.connect(crackleGain);
-    crackleGain.connect(audioCtx.destination);
-    crackle.start(now);
+    // Debris tail: lower-passed noise decaying a bit longer than the crack,
+    // reading as the plane breaking apart rather than a clean tone cutting off.
+    const tailDuration = 0.14;
+    const tailSize = Math.floor(audioCtx.sampleRate * tailDuration);
+    const tailBuffer = audioCtx.createBuffer(1, tailSize, audioCtx.sampleRate);
+    const tailData = tailBuffer.getChannelData(0);
+    for (let i = 0; i < tailSize; i++) tailData[i] = Math.random() * 2 - 1;
+    const tail = audioCtx.createBufferSource();
+    tail.buffer = tailBuffer;
+    const tailFilter = audioCtx.createBiquadFilter();
+    tailFilter.type = "lowpass";
+    tailFilter.frequency.setValueAtTime(2600, now);
+    tailFilter.frequency.exponentialRampToValueAtTime(500, now + tailDuration);
+    const tailGain = audioCtx.createGain();
+    tailGain.gain.setValueAtTime(0.22, now + 0.01);
+    tailGain.gain.exponentialRampToValueAtTime(0.001, now + tailDuration);
+    tail.connect(tailFilter);
+    tailFilter.connect(tailGain);
+    tailGain.connect(audioCtx.destination);
+    tail.start(now);
   } catch {
     // Sound is a nice-to-have — never let it block gameplay.
   }
