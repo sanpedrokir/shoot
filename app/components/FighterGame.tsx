@@ -22,6 +22,15 @@ import {
   playSmartBombPickupSound,
   primeAudioContext,
 } from "../lib/sfx";
+import {
+  type LifetimeStats,
+  type Achievement,
+  readLifetimeStats,
+  writeLifetimeStats,
+  checkForNewUnlocks,
+  readUnlockedAchievements,
+  ACHIEVEMENTS,
+} from "../lib/achievements";
 import AuthPanel, { type AuthUser, type AuthPanelHandle, type LeaderboardTop } from "./AuthPanel";
 
 // heavy is set only for the player-fired "missile" bolts that appear while
@@ -1357,6 +1366,32 @@ export default function FighterGame() {
   useEffect(() => {
     shieldTotalRef.current = shieldTotal;
   }, [shieldTotal]);
+
+  // Lifetime achievement-tracking stats -- read once on mount, mutated (and
+  // persisted) directly from the game loop as kills/pickups/boss-kills
+  // happen. Not React state: nothing needs to re-render off these ticking
+  // up, only off an actual new achievement unlocking (see achievementToast).
+  const lifetimeStatsRef = useRef<LifetimeStats>(readLifetimeStats());
+  const [achievementToast, setAchievementToast] = useState<Achievement | null>(null);
+  useEffect(() => {
+    if (!achievementToast) return;
+    const t = setTimeout(() => setAchievementToast(null), 3500);
+    return () => clearTimeout(t);
+  }, [achievementToast]);
+  // Persists the mutated lifetime-stats ref and surfaces a toast for
+  // whichever achievement(s) just crossed their threshold -- called
+  // directly from event sites (a kill, a shield pickup, a boss kill, a
+  // co-op game starting), never every frame, so the localStorage write is
+  // cheap. Safe to call from the game-loop's once-created closure too: it
+  // only ever reads refs and calls the stable setAchievementToast setter,
+  // neither of which can go stale.
+  const recordLifetimeStats = () => {
+    writeLifetimeStats(lifetimeStatsRef.current);
+    const newly = checkForNewUnlocks(lifetimeStatsRef.current, unlockedLevelRef.current);
+    if (newly.length > 0) setAchievementToast(newly[0]);
+  };
+  const [showAchievements, setShowAchievements] = useState(false);
+  const [unlockedAchievementIds, setUnlockedAchievementIds] = useState<string[]>([]);
   // Seeded with an SSR-safe default (matching the server-rendered markup) and
   // synced from localStorage in a mount effect below, to avoid a hydration
   // mismatch for returning players whose real best score differs from this.
@@ -1367,6 +1402,10 @@ export default function FighterGame() {
   // frontier but can be pulled back to an earlier, already-unlocked location
   // for a deliberate replay without losing progress.
   const [unlockedLevel, setUnlockedLevel] = useState(1);
+  const unlockedLevelRef = useRef(unlockedLevel);
+  useEffect(() => {
+    unlockedLevelRef.current = unlockedLevel;
+  }, [unlockedLevel]);
   const [soloStartLevel, setSoloStartLevel] = useState(1);
   const [justUnlockedLocation, setJustUnlockedLocation] = useState<string | null>(null);
   const [showLocations, setShowLocations] = useState(false);
@@ -1562,6 +1601,10 @@ export default function FighterGame() {
     setNetRole(role);
     playerIdsRef.current = playerIds;
     setHostLeft(false);
+    if (role !== "solo") {
+      lifetimeStatsRef.current.coopGamesPlayed += 1;
+      recordLifetimeStats();
+    }
     const el = containerRef.current;
     const width = el?.clientWidth ?? 360;
     const height = el?.clientHeight ?? 640;
@@ -2592,6 +2635,9 @@ export default function FighterGame() {
       if (deadEnemies.size) {
         s.enemies = s.enemies.filter((en) => !deadEnemies.has(en));
         playEnemyHitSound();
+        lifetimeStatsRef.current.kills += deadEnemies.size;
+        if ([...deadEnemies].some((en) => en.isBoss)) lifetimeStatsRef.current.bossKills += 1;
+        recordLifetimeStats();
       }
       if (deadBullets.size) s.bullets = s.bullets.filter((b) => !deadBullets.has(b));
       if (scored) {
@@ -2619,6 +2665,8 @@ export default function FighterGame() {
           spawnExplosion(s.particles, sh.x, sh.y, ["#ffd75e", "#fff3c0", "#c98a1f"], 10);
         }
         playShieldPickupSound();
+        lifetimeStatsRef.current.shieldsCollected += collectedShields.size;
+        recordLifetimeStats();
         const prevTotal = shieldTotalRef.current;
         const newTotal = prevTotal + collectedShields.size * SHIELD_VALUE;
         shieldTotalRef.current = newTotal;
@@ -2667,6 +2715,7 @@ export default function FighterGame() {
                 spawnExplosion(s.particles, en.x, en.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"]);
                 if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 10;
               }
+              lifetimeStatsRef.current.kills += regularEnemies.length;
               s.enemies = boss ? [boss] : [];
               if (boss) {
                 const damage = 12;
@@ -2678,12 +2727,15 @@ export default function FighterGame() {
                   spawnExplosion(s.particles, boss.x, boss.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], 40);
                   triggerShake(s, 12, 0.5);
                   if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 100;
+                  lifetimeStatsRef.current.kills += 1;
+                  lifetimeStatsRef.current.bossKills += 1;
                 }
               }
               setScores([...scoresRef.current]);
               scoreRef.current = scoresRef.current.reduce((sum, v) => sum + (v ?? 0), 0);
               setScore(scoreRef.current);
               playEnemyHitSound();
+              recordLifetimeStats();
             }
             s.smartBombs = s.smartBombs.filter((s2) => s2 !== sb);
             break;
@@ -3270,6 +3322,56 @@ export default function FighterGame() {
         </div>
       </div>
 
+      {achievementToast && (
+        <div className="pointer-events-none absolute inset-x-0 top-16 z-50 flex justify-center px-6 font-sans">
+          <div className="flex items-center gap-2 rounded-xl border border-yellow-400/40 bg-black/85 px-4 py-2.5 shadow-lg shadow-black/40">
+            <span className="text-2xl leading-none">{achievementToast.icon}</span>
+            <div className="text-left">
+              <div className="text-[10px] font-bold uppercase tracking-wide text-yellow-300/90">
+                Achievement Unlocked
+              </div>
+              <div className="text-sm font-bold text-white">{achievementToast.label}</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showAchievements && (
+        <div className="absolute inset-0 z-50 flex flex-col bg-[#05060c] text-white font-sans">
+          <div className="flex items-center justify-between px-5 pt-20 pb-2">
+            <h2 className="text-xl font-extrabold tracking-tight">🏆 Achievements</h2>
+            <button
+              onClick={() => setShowAchievements(false)}
+              aria-label="Close"
+              className="rounded-full bg-white/10 px-3 py-1.5 text-sm font-semibold active:scale-95 transition-transform"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto px-5 pb-8">
+            <div className="flex flex-col gap-2">
+              {ACHIEVEMENTS.map((a) => {
+                const unlocked = unlockedAchievementIds.includes(a.id);
+                return (
+                  <div
+                    key={a.id}
+                    className={`flex items-center gap-3 rounded-xl px-4 py-3 ${
+                      unlocked ? "bg-yellow-400/10 border border-yellow-400/30" : "bg-white/5 opacity-50"
+                    }`}
+                  >
+                    <span className="text-2xl leading-none">{unlocked ? a.icon : "🔒"}</span>
+                    <div className="text-left">
+                      <div className="text-sm font-bold">{a.label}</div>
+                      <div className="text-xs text-white/60">{a.description}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
       {levelTitleCard && status === "playing" && (
         <div className="pointer-events-none absolute inset-x-0 top-[28%] z-40 flex flex-col items-center gap-1 font-sans">
           <div
@@ -3718,6 +3820,16 @@ export default function FighterGame() {
           )}
 
           {best > 0 && <p className="text-xs text-white/60">Your Best Score: {best}</p>}
+
+          <button
+            onClick={() => {
+              setUnlockedAchievementIds(readUnlockedAchievements());
+              setShowAchievements(true);
+            }}
+            className="rounded-full bg-white/10 px-3 py-1 text-xs font-semibold active:scale-95 transition-transform"
+          >
+            🏆 Achievements
+          </button>
 
           <AuthPanel
             ref={authPanelRef}
