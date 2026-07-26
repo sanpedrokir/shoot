@@ -1548,14 +1548,6 @@ export default function FighterGame() {
   // directly, shown only for as long as the menu track isn't actually
   // audible yet.
   const [showSoundPrompt, setShowSoundPrompt] = useState(false);
-  // Brief "Level N — Location Name" title card shown for a couple seconds
-  // whenever a level actually starts (any mode) -- auto-clears itself.
-  const [levelTitleCard, setLevelTitleCard] = useState<{ level: number; location: string } | null>(null);
-  useEffect(() => {
-    if (!levelTitleCard) return;
-    const t = setTimeout(() => setLevelTitleCard(null), 2600);
-    return () => clearTimeout(t);
-  }, [levelTitleCard]);
 
   useEffect(() => {
     localIdRef.current = getClientId();
@@ -1733,7 +1725,6 @@ export default function FighterGame() {
     statusRef.current = "playing";
     setStatus("playing");
     musicPlayerRef.current?.start(role === "solo" ? pickSoloMusicTrack() : COOP_MUSIC_TRACK);
-    setLevelTitleCard({ level, location: getLocationName(locationIndexForLevel(level)) });
   };
 
   const startSolo = (level: number = soloStartLevel) => {
@@ -3873,25 +3864,6 @@ export default function FighterGame() {
                   </div>
                 );
               })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {levelTitleCard && status === "playing" && (
-        <div className="pointer-events-none absolute inset-x-0 top-[24%] z-40 flex flex-col items-center gap-1.5 font-sans">
-          <div className="rounded-2xl border border-sky-300/30 bg-black/55 px-6 py-3 text-center backdrop-blur-sm">
-            <div
-              className="text-6xl font-extrabold uppercase tracking-wide font-[family-name:var(--font-game)] text-sky-300"
-              style={{
-                WebkitTextStroke: "2.5px #071229",
-                textShadow: "0 4px 0 #071229, 0 0 22px rgba(56,132,255,0.95), 0 0 40px rgba(56,132,255,0.6)",
-              }}
-            >
-              Level {levelTitleCard.level}
-            </div>
-            <div className="mt-1 text-base font-bold uppercase tracking-[0.15em] text-white">
-              {levelTitleCard.location}
             </div>
           </div>
         </div>
