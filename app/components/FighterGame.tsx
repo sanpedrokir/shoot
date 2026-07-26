@@ -14,6 +14,7 @@ import {
   type ChatMessage,
 } from "../lib/coop";
 import { createMusicPlayer, type MusicPlayer } from "../lib/musicPlayer";
+import { playPageFlipSound } from "../lib/sfx";
 import AuthPanel, { type AuthUser, type LeaderboardTop } from "./AuthPanel";
 
 type Bullet = { x: number; y: number; vy: number; ownerId: string; rapid: boolean };
@@ -1245,6 +1246,9 @@ export default function FighterGame() {
   // (rather than the plain "browse from the HUD" case) — the map scrolls to
   // and blinks this node instead of the frontier.
   const [highlightLocation, setHighlightLocation] = useState<number | null>(null);
+  // Brief tap-feedback glow on a roadmap node — set on tap, cleared once the
+  // short flip-sound/glow beat has played and the run actually launches.
+  const [tappedLocation, setTappedLocation] = useState<number | null>(null);
   const locationsScrollRef = useRef<HTMLDivElement | null>(null);
 
   const [showChat, setShowChat] = useState(false);
@@ -3033,12 +3037,17 @@ export default function FighterGame() {
                     <button
                       disabled={locked}
                       onClick={() => {
-                        setShowLocations(false);
-                        setHighlightLocation(null);
-                        startSolo(startLevel);
+                        setTappedLocation(idx);
+                        playPageFlipSound();
+                        setTimeout(() => {
+                          setShowLocations(false);
+                          setHighlightLocation(null);
+                          setTappedLocation(null);
+                          startSolo(startLevel);
+                        }, 220);
                       }}
                       aria-label={locked ? `${getLocationName(idx)} (locked)` : `Start at ${getLocationName(idx)}`}
-                      className={`absolute flex items-center justify-center rounded-full transition-transform ${
+                      className={`absolute flex items-center justify-center rounded-full transition-transform duration-200 ${
                         locked ? "opacity-50 grayscale" : "active:scale-95"
                       }`}
                       style={{
@@ -3046,14 +3055,18 @@ export default function FighterGame() {
                         top: y,
                         width: PATH_NODE_R * 2,
                         height: PATH_NODE_R * 2,
-                        transform: "translate(-50%, -50%)",
-                        boxShadow: isHighlighted
-                          ? `0 0 0 3px rgba(250,204,21,0.95), 0 0 26px 8px rgba(250,204,21,0.6)`
-                          : isFrontier
-                            ? `0 0 0 3px rgba(52,211,153,0.95), 0 0 26px 9px rgba(52,211,153,0.65)`
-                            : isSelected
-                              ? `0 0 0 3px rgba(96,165,250,0.9), 0 0 14px 3px ${palette.planetEdge}88`
-                              : `0 0 14px 3px ${palette.planetEdge}66`,
+                        transform:
+                          tappedLocation === idx ? "translate(-50%, -50%) scale(1.18)" : "translate(-50%, -50%)",
+                        boxShadow:
+                          tappedLocation === idx
+                            ? `0 0 0 4px rgba(255,255,255,0.95), 0 0 42px 16px rgba(255,255,255,0.9)`
+                            : isHighlighted
+                              ? `0 0 0 3px rgba(250,204,21,0.95), 0 0 26px 8px rgba(250,204,21,0.6)`
+                              : isFrontier
+                                ? `0 0 0 3px rgba(52,211,153,0.95), 0 0 26px 9px rgba(52,211,153,0.65)`
+                                : isSelected
+                                  ? `0 0 0 3px rgba(96,165,250,0.9), 0 0 14px 3px ${palette.planetEdge}88`
+                                  : `0 0 14px 3px ${palette.planetEdge}66`,
                       }}
                     >
                       {/* Hexagon badge body — clipped separately from the
