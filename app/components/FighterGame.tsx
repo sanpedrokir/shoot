@@ -32,8 +32,6 @@ import {
   readLifetimeStats,
   writeLifetimeStats,
   checkForNewUnlocks,
-  readUnlockedAchievements,
-  ACHIEVEMENTS,
 } from "../lib/achievements";
 import AuthPanel, { type AuthUser, type AuthPanelHandle, type LeaderboardTop } from "./AuthPanel";
 
@@ -1487,8 +1485,6 @@ export default function FighterGame() {
     const newly = checkForNewUnlocks(lifetimeStatsRef.current, unlockedLevelRef.current);
     if (newly.length > 0) setAchievementToast(newly[0]);
   };
-  const [showAchievements, setShowAchievements] = useState(false);
-  const [unlockedAchievementIds, setUnlockedAchievementIds] = useState<string[]>([]);
   // Seeded with an SSR-safe default (matching the server-rendered markup) and
   // synced from localStorage in a mount effect below, to avoid a hydration
   // mismatch for returning players whose real best score differs from this.
@@ -3838,42 +3834,6 @@ export default function FighterGame() {
         </div>
       )}
 
-      {showAchievements && (
-        <div className="absolute inset-0 z-50 flex flex-col bg-[#05060c] text-white font-sans">
-          <div className="flex items-center justify-between px-5 pt-20 pb-2">
-            <h2 className="text-xl font-extrabold tracking-tight">🏆 Achievements</h2>
-            <button
-              onClick={() => setShowAchievements(false)}
-              aria-label="Close"
-              className="rounded-full bg-white/10 px-3 py-1.5 text-sm font-semibold active:scale-95 transition-transform"
-            >
-              ✕
-            </button>
-          </div>
-          <div className="flex-1 overflow-y-auto px-5 pb-8">
-            <div className="flex flex-col gap-2">
-              {ACHIEVEMENTS.map((a) => {
-                const unlocked = unlockedAchievementIds.includes(a.id);
-                return (
-                  <div
-                    key={a.id}
-                    className={`flex items-center gap-3 rounded-xl px-4 py-3 ${
-                      unlocked ? "bg-yellow-400/10 border border-yellow-400/30" : "bg-white/5 opacity-50"
-                    }`}
-                  >
-                    <span className="text-2xl leading-none">{unlocked ? a.icon : "🔒"}</span>
-                    <div className="text-left">
-                      <div className="text-sm font-bold">{a.label}</div>
-                      <div className="text-xs text-white/60">{a.description}</div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
       {showChat && netRole !== "solo" && status === "playing" && (
         <div className="absolute right-3 top-16 z-40 w-64 rounded-xl bg-black/85 p-3 text-white backdrop-blur-sm font-sans sm:right-4">
           <div className="mb-2 flex items-center justify-between">
@@ -4307,16 +4267,6 @@ export default function FighterGame() {
           )}
 
           {best > 0 && <p className="text-xs text-white/60">Your Best Score: {best}</p>}
-
-          <button
-            onClick={() => {
-              setUnlockedAchievementIds(readUnlockedAchievements());
-              setShowAchievements(true);
-            }}
-            className="rounded-full bg-white/10 px-3 py-1 text-xs font-semibold active:scale-95 transition-transform"
-          >
-            🏆 Achievements
-          </button>
 
           <AuthPanel
             ref={authPanelRef}
