@@ -1521,7 +1521,7 @@ export default function FighterGame() {
   const [achievementToast, setAchievementToast] = useState<Achievement | null>(null);
   useEffect(() => {
     if (!achievementToast) return;
-    const t = setTimeout(() => setAchievementToast(null), 3500);
+    const t = setTimeout(() => setAchievementToast(null), 1800);
     return () => clearTimeout(t);
   }, [achievementToast]);
   // Persists the mutated lifetime-stats ref and surfaces a toast for
@@ -3768,14 +3768,14 @@ export default function FighterGame() {
       )}
 
       {achievementToast && (
-        <div className="pointer-events-none absolute inset-x-0 top-16 z-50 flex justify-center px-6 font-sans">
-          <div className="flex items-center gap-2 rounded-xl border border-yellow-400/40 bg-black/85 px-4 py-2.5 shadow-lg shadow-black/40">
-            <span className="text-2xl leading-none">{achievementToast.icon}</span>
+        <div className="pointer-events-none absolute right-2 top-20 z-50 font-sans">
+          <div className="flex items-center gap-1.5 rounded-lg border border-yellow-400/40 bg-black/85 px-2.5 py-1.5 shadow-lg shadow-black/40">
+            <span className="text-lg leading-none">{achievementToast.icon}</span>
             <div className="text-left">
-              <div className="text-[10px] font-bold uppercase tracking-wide text-yellow-300/90">
-                Achievement Unlocked
+              <div className="text-[8px] font-bold uppercase tracking-wide text-yellow-300/90">
+                Unlocked
               </div>
-              <div className="text-sm font-bold text-white">{achievementToast.label}</div>
+              <div className="text-xs font-bold leading-tight text-white">{achievementToast.label}</div>
             </div>
           </div>
         </div>
