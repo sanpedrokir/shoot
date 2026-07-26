@@ -3477,15 +3477,17 @@ export default function FighterGame() {
         drawJetShadow(c, en.scale);
         c.rotate(Math.PI);
         // Regular-enemy variety is recolored via canvas filter rather than
-        // needing separate art: dodger shifts cyan, tanky darkens/desaturates
-        // to look armored, elite shifts gold/violet and brightens slightly.
+        // needing separate art -- all kept red (no hue-rotate) so every
+        // enemy plane reads consistently as hostile: dodger brightens and
+        // boosts saturation for an energetic look, tanky darkens/desaturates
+        // to look armored, elite goes darker and richer with more contrast.
         c.filter =
           en.kind === "dodger"
-            ? "hue-rotate(200deg) saturate(1.4)"
+            ? "saturate(1.6) brightness(1.15)"
             : en.kind === "tanky"
               ? "brightness(0.75) saturate(0.7)"
               : en.kind === "elite"
-                ? "hue-rotate(265deg) saturate(1.6) brightness(1.1)"
+                ? "saturate(1.7) brightness(0.9) contrast(1.3)"
                 : "none";
         const sprite = en.isBoss ? jetImagesRef.current.monster : jetImagesRef.current.red;
         if (!USE_PLANE_SPRITES || !drawJetSprite(c, sprite, en.scale)) {
