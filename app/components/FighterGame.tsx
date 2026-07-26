@@ -129,7 +129,7 @@ const INVULN_TIME = 2.2;
 // Each shield pickup is worth a fixed amount; once the running total crosses
 // another multiple of SHIELD_PER_LIFE, one life is restored (capped at
 // maxLives), so recovery is a steady drip rather than an instant refill.
-const SHIELD_VALUE = 20;
+const SHIELD_VALUE = 19;
 const SHIELD_PER_LIFE = 40;
 
 const RAPIDFIRE_HIT_RADIUS = 18;
@@ -172,36 +172,14 @@ const INPUT_SEND_INTERVAL = 1 / 8;
 const MAX_SNAPSHOT_ENTITIES = 40;
 
 // ---------------------------------------------------------------------
-// Locations: every 3 levels is one named "location" the player travels
+// Locations: every level is its own named "location" the player travels
 // to. Endless and fully deterministic — the same location index always
 // produces the same name and scenery, on host and ally alike, computed
 // locally from the synced level number rather than sent over the network.
 // ---------------------------------------------------------------------
 
 function locationIndexForLevel(level: number): number {
-  return Math.floor((level - 1) / 3) + 1;
-}
-
-// Which of the 3 levels within the current location this is (1, 2, or 3) —
-// shown alongside the location name so the "survive 3 levels to unlock the
-// next location" structure is visible, not just implied.
-function levelWithinLocation(level: number): number {
-  return ((level - 1) % 3) + 1;
-}
-
-// A 3-segment progress bar for that sub-index — reused on the main menu and
-// the survive screen so the same visual language shows up in both places.
-function LocationProgressDots({ current }: { current: number }) {
-  return (
-    <div className="flex gap-1">
-      {[1, 2, 3].map((n) => (
-        <span
-          key={n}
-          className={`h-1.5 w-5 rounded-full ${n <= current ? "bg-emerald-400" : "bg-white/20"}`}
-        />
-      ))}
-    </div>
-  );
+  return level;
 }
 
 // A tiny seeded PRNG (mulberry32) so "the same location always looks the
@@ -2022,19 +2000,25 @@ export default function FighterGame() {
       // phase and a swarm-heavy phase as it climbs.
       const difficulty = levelDifficulty(s.level) * timeDifficultyMultiplier(s.elapsed);
       const { bombFocus, swarmFocus } = phaseFocus(s.elapsed);
+      // Co-op ("ally") games get noticeably more enemy traffic than solo —
+      // bursts arrive both bigger and more often, scaled off how many extra
+      // teammates are in the fight.
+      const extraPlayers = s.players.length - 1;
       s.spawnTimer -= dt;
       // Once the finale lineup has landed, the regular random bursts stop —
       // it should read as a clean shooting gallery, not get cluttered by
       // more planes falling in around it.
       if (s.spawnTimer <= 0 && !s.finalWaveSpawned) {
-        s.spawnTimer = clamp(1.6 - difficulty * 0.5 - swarmFocus * 0.3, 0.45, 1.6) + Math.random() * 0.3;
+        s.spawnTimer =
+          (clamp(1.6 - difficulty * 0.5 - swarmFocus * 0.3, 0.45, 1.6) + Math.random() * 0.3) /
+          (1 + extraPlayers * 0.2);
         // Every burst is at least a pair so the wedge formation always reads
-        // as a squadron arriving together — plus one extra enemy per
-        // teammate beyond the first (so co-op consistently sees a bit more
-        // to shoot at than solo), plus a little more on top during the
-        // peak of a squadron-swarm phase.
+        // as a squadron arriving together — plus three extra enemies per
+        // teammate beyond the first (so co-op sees a noticeably bigger
+        // squadron than solo, not just one plane more), plus a little more
+        // on top during the peak of a squadron-swarm phase.
         const extraSwarm = Math.min(1, Math.floor(swarmFocus * 2.2));
-        const count = 2 + (s.players.length - 1) + extraSwarm;
+        const count = 2 + extraPlayers * 3 + extraSwarm;
         const spacing = 34;
         const offsets = wedgeFormation(count, spacing, 22);
         const maxAbsDx = Math.max(...offsets.map((o) => Math.abs(o.dx)));
@@ -2064,7 +2048,7 @@ export default function FighterGame() {
       if (!s.midpointWaveSpawned && s.elapsed >= s.levelDuration / 2) {
         s.midpointWaveSpawned = true;
         const rows = 3;
-        const cols = 4;
+        const cols = 4 + extraPlayers;
         const spacingX = 46;
         const offsets = gridFormation(rows, cols, spacingX, 42);
         const maxAbsDx = Math.max(...offsets.map((o) => Math.abs(o.dx)));
@@ -2118,7 +2102,7 @@ export default function FighterGame() {
       if (!s.finalWaveSpawned && timeLeft <= 10) {
         s.finalWaveSpawned = true;
         const rows = 2;
-        const cols = 6;
+        const cols = 6 + extraPlayers;
         const spacingX = 54;
         const spacingY = 42;
         const offsets = gridFormation(rows, cols, spacingX, spacingY);
@@ -2915,7 +2899,7 @@ export default function FighterGame() {
               <p className="text-[11px] text-white/50">
                 {highlightLocation
                   ? "This is your new stop on the route."
-                  : "Survive 3 levels to unlock the next stop on the route."}
+                  : "Survive a level to unlock the next stop on the route."}
               </p>
             </div>
             <button
@@ -3052,8 +3036,7 @@ export default function FighterGame() {
                 const { x, y } = roadmapNodeCenter(k);
                 const locked = idx > frontierLocation;
                 const palette = LOCATION_PALETTES[idx % LOCATION_PALETTES.length];
-                const startLevel = (idx - 1) * 3 + 1;
-                const endLevel = startLevel + 2;
+                const startLevel = idx;
                 const isFrontier = idx === frontierLocation;
                 const isSelected = idx === locationIndexForLevel(soloStartLevel);
                 const isHighlighted = highlightLocation === idx;
@@ -3142,7 +3125,7 @@ export default function FighterGame() {
                     >
                       <div className="truncate text-xs font-bold">{getLocationName(idx)}</div>
                       <div className="text-[10px] text-white/60">
-                        {locked ? `Reach Level ${startLevel}` : `Levels ${startLevel}–${endLevel}`}
+                        {locked ? `Reach Level ${startLevel}` : `Level ${startLevel}`}
                       </div>
                       {badges.length > 0 && (
                         <div className="mt-1 flex flex-wrap justify-center gap-1">
@@ -3311,27 +3294,18 @@ export default function FighterGame() {
           <h2 className="text-3xl font-extrabold">You Survived!</h2>
           {isProgressiveRun && (
             <div className="flex flex-col items-center gap-1.5">
-              {justUnlockedLocation && (
-                <>
-                  <p className="text-sm font-semibold text-emerald-300">
-                    🔓 New location unlocked: {justUnlockedLocation}
-                  </p>
-                  <button
-                    onClick={() => {
-                      setHighlightLocation(locationIndexForLevel(soloStartLevel));
-                      setShowLocations(true);
-                    }}
-                    className="rounded-full bg-white/15 px-4 py-1.5 text-xs font-semibold active:scale-95 transition-transform"
-                  >
-                    🗺️ View New Location
-                  </button>
-                </>
-              )}
-              <p className="text-sm text-white/80">
-                Next: {getLocationName(locationIndexForLevel(soloStartLevel))} · Level{" "}
-                {levelWithinLocation(soloStartLevel)} of 3
+              <p className="text-sm font-semibold text-emerald-300">
+                🔓 New location unlocked: {justUnlockedLocation}
               </p>
-              <LocationProgressDots current={levelWithinLocation(soloStartLevel)} />
+              <button
+                onClick={() => {
+                  setHighlightLocation(locationIndexForLevel(soloStartLevel));
+                  setShowLocations(true);
+                }}
+                className="rounded-full bg-white/15 px-4 py-1.5 text-xs font-semibold active:scale-95 transition-transform"
+              >
+                🗺️ View New Location
+              </button>
             </div>
           )}
           <p className="text-lg">
@@ -3356,12 +3330,14 @@ export default function FighterGame() {
           {isAlly ? (
             <p className="text-sm text-white/70">Waiting for host to play again…</p>
           ) : (
-            <button
-              onClick={handlePlayAgain}
-              className="mt-1 rounded-full bg-blue-600 px-8 py-3 text-base font-bold shadow-lg shadow-blue-900/40 active:scale-95 transition-transform"
-            >
-              {isProgressiveRun ? "Continue →" : "Play Again"}
-            </button>
+            !isProgressiveRun && (
+              <button
+                onClick={handlePlayAgain}
+                className="mt-1 rounded-full bg-blue-600 px-8 py-3 text-base font-bold shadow-lg shadow-blue-900/40 active:scale-95 transition-transform"
+              >
+                Play Again
+              </button>
+            )
           )}
           <div className="flex gap-4">
             <button onClick={backToMenu} className="text-sm text-white/70 underline underline-offset-2">
