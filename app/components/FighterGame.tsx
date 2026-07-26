@@ -1300,20 +1300,24 @@ export default function FighterGame() {
 
   // Autoplay is blocked until the page has seen a real user gesture, so the
   // menu track (which should start playing before anyone has clicked
-  // anything) can't rely on the effect above alone. This fires once on the
-  // very first pointer/key interaction anywhere and (re)starts whatever
-  // ambient track should currently be playing.
+  // anything) can't rely on the effect above alone. Deliberately NOT
+  // `{ once: true }`: calling start() again while already playing is a
+  // harmless no-op (setTrack skips re-assigning the same src), so it's safer
+  // to keep retrying on every early gesture than to bet on the very first
+  // one landing inside the browser's gesture window.
   useEffect(() => {
     const tryResumeMenuMusic = () => {
       if (statusRef.current === "ready") {
         musicPlayerRef.current?.start(MENU_MUSIC_TRACK);
       }
     };
-    window.addEventListener("pointerdown", tryResumeMenuMusic, { once: true, capture: true });
-    window.addEventListener("keydown", tryResumeMenuMusic, { once: true, capture: true });
+    window.addEventListener("pointerdown", tryResumeMenuMusic, { capture: true });
+    window.addEventListener("keydown", tryResumeMenuMusic, { capture: true });
+    window.addEventListener("touchstart", tryResumeMenuMusic, { capture: true });
     return () => {
       window.removeEventListener("pointerdown", tryResumeMenuMusic, { capture: true });
       window.removeEventListener("keydown", tryResumeMenuMusic, { capture: true });
+      window.removeEventListener("touchstart", tryResumeMenuMusic, { capture: true });
     };
   }, []);
 
@@ -3119,8 +3123,14 @@ export default function FighterGame() {
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-5 overflow-y-auto bg-gradient-to-b from-black/25 via-black/45 to-black/75 px-6 py-8 text-center text-white font-sans">
           <div className="flex flex-col items-center gap-1">
             <span className="text-4xl drop-shadow-[0_0_18px_rgba(120,170,255,0.6)]">🛩️</span>
-            <h1 className="bg-gradient-to-b from-white via-sky-200 to-blue-400 bg-clip-text text-4xl font-black italic tracking-tight text-transparent drop-shadow-[0_4px_14px_rgba(30,90,220,0.55)] sm:text-5xl">
-              SKY RAIDER
+            <h1
+              className="bg-gradient-to-b from-white via-sky-100 to-blue-400 bg-clip-text text-5xl font-black uppercase tracking-tight text-transparent sm:text-6xl"
+              style={{
+                WebkitTextStroke: "1.5px #071229",
+                textShadow: "0 3px 0 #071229, 0 0 18px rgba(56,132,255,0.85), 0 0 34px rgba(56,132,255,0.5)",
+              }}
+            >
+              Sky Raider
             </h1>
             <div className="h-0.5 w-32 bg-gradient-to-r from-transparent via-blue-400/80 to-transparent" />
           </div>
