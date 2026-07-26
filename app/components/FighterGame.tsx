@@ -1410,6 +1410,12 @@ export default function FighterGame() {
   // input (desktop testing) keeps the simpler direct-follow behavior.
   const dragOriginRef = useRef<{ x: number; y: number } | null>(null);
   const dragPlaneOriginRef = useRef<{ x: number; y: number } | null>(null);
+  // Which touch is currently steering, so a second finger (e.g. tapping the
+  // Boss Blast/Ultimate button, which sits on top of the canvas) can't hijack
+  // the drag -- pointermove/pointerup are bound on window (so dragging can
+  // continue past the canvas edge), which means they'd otherwise fire for
+  // every pointer on the page, not just the one that started the gesture.
+  const activeTouchPointerIdRef = useRef<number | null>(null);
   // Latest chat message per player id, keyed by id so only the most recent
   // one shows (a speech bubble over that player's plane, not a running
   // log) — expires on its own via `until`, no explicit cleanup needed.
@@ -1992,9 +1998,9 @@ export default function FighterGame() {
     const onPointerDown = (e: PointerEvent) => {
       const s = stateRef.current;
       if (!s) return;
-      s.pointerDown = true;
       const p = getLocalPoint(e.clientX, e.clientY);
       if (e.pointerType === "mouse") {
+        s.pointerDown = true;
         localTargetRef.current = p;
         const pl = getLocalPlayer(s);
         if (pl) {
@@ -2002,6 +2008,12 @@ export default function FighterGame() {
           pl.targetY = p.y;
         }
       } else {
+        // Ignore a second touch starting on the canvas while one is already
+        // steering, so only the finger that began the drag ever controls
+        // the plane.
+        if (activeTouchPointerIdRef.current !== null) return;
+        activeTouchPointerIdRef.current = e.pointerId;
+        s.pointerDown = true;
         // Touch/pen: steer relative to how far the finger moves from where
         // it first landed, instead of snapping the plane straight under it
         // -- a finger (especially a bigger one) resting on the plane hides
@@ -2027,7 +2039,12 @@ export default function FighterGame() {
           pl.targetX = p.x;
           pl.targetY = p.y;
         }
-      } else if (s.pointerDown && dragOriginRef.current && dragPlaneOriginRef.current) {
+      } else if (
+        s.pointerDown &&
+        e.pointerId === activeTouchPointerIdRef.current &&
+        dragOriginRef.current &&
+        dragPlaneOriginRef.current
+      ) {
         const p = getLocalPoint(e.clientX, e.clientY);
         const dx = p.x - dragOriginRef.current.x;
         const dy = p.y - dragOriginRef.current.y;
@@ -2043,11 +2060,16 @@ export default function FighterGame() {
         }
       }
     };
-    const onPointerUp = () => {
+    const onPointerUp = (e: PointerEvent) => {
+      // A second finger releasing (e.g. after tapping a HUD button) must
+      // not stop the actual steering touch -- only react to the pointer
+      // that's actually driving it (mouse has just the one, always fine).
+      if (e.pointerType !== "mouse" && e.pointerId !== activeTouchPointerIdRef.current) return;
       const s = stateRef.current;
       if (s) s.pointerDown = false;
       dragOriginRef.current = null;
       dragPlaneOriginRef.current = null;
+      activeTouchPointerIdRef.current = null;
     };
 
     canvas.addEventListener("pointerdown", onPointerDown);
