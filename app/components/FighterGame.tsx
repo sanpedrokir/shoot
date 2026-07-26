@@ -3387,7 +3387,12 @@ export default function FighterGame() {
           c.beginPath();
           c.arc(0, 0, 16, 0, Math.PI * 2);
           c.fill();
-          c.scale(1.7, 1.7);
+          c.scale(1.9, 1.9);
+        } else {
+          // Enlarged from the original 1x size (matches drawMissile's own
+          // small base geometry) so regular enemy fire reads clearly against
+          // busy backgrounds, not just the boss's already-bigger bolts.
+          c.scale(1.6, 1.6);
         }
         const angle = Math.atan2(m.vy, m.vx) - Math.PI / 2;
         c.rotate(angle);
