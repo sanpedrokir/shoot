@@ -32,11 +32,17 @@ interface AuthPanelProps {
   onPendingAuthChange?: (pending: boolean) => void;
 }
 
+// Must match FighterGame.tsx's own "skyfighter-best"/UNLOCKED_LEVEL_KEY
+// exactly -- these used to be two separate, never-synced keys (this file
+// had its own "skyfighter-max-level" that actual gameplay never wrote to),
+// which is how a brand-new account could end up "starting" at whatever
+// level a previous account on the same device had reached: registering
+// read this stale, always-1 key instead of the real local progress.
 function readLocalProgress(): { highScore: number; maxLevel: number } {
   if (typeof window === "undefined") return { highScore: 0, maxLevel: 1 };
   try {
     const highScore = parseInt(window.localStorage.getItem("skyfighter-best") ?? "0", 10) || 0;
-    const maxLevel = parseInt(window.localStorage.getItem("skyfighter-max-level") ?? "1", 10) || 1;
+    const maxLevel = parseInt(window.localStorage.getItem("skyfighter-unlocked-level") ?? "1", 10) || 1;
     return { highScore, maxLevel };
   } catch {
     return { highScore: 0, maxLevel: 1 };
@@ -46,7 +52,7 @@ function readLocalProgress(): { highScore: number; maxLevel: number } {
 function storeLocalProgress(highScore: number, maxLevel: number) {
   try {
     window.localStorage.setItem("skyfighter-best", String(highScore));
-    window.localStorage.setItem("skyfighter-max-level", String(maxLevel));
+    window.localStorage.setItem("skyfighter-unlocked-level", String(maxLevel));
   } catch {
     // ignore
   }

@@ -126,7 +126,9 @@ interface GameState {
   // so the ally computes the identical theme locally.
   locationTheme: LocationTheme;
   // Host/solo-simulation-only (see perksForLocation) — the ally never runs
-  // the fire loop itself, so this never needs to be networked.
+  // the fire loop itself, so this never needs to be networked. Already
+  // folded in here is any Quick Reload perk multiplier chosen on the
+  // level-up perk screen (see RunPerks / runPerksRef).
   baseFireInterval: number;
   spawnTimer: number;
   shieldTimer: number;
@@ -374,6 +376,52 @@ function perkSummary(locationIndex: number): string[] {
   return badges;
 }
 
+// Player-chosen perks, offered on the level-up screen after every survived
+// level (progressive solo runs only) -- distinct from the automatic,
+// depth-based LocationPerks above. These stack for as long as the current
+// playthrough lasts and reset on a fresh run (back to menu / game over).
+interface RunPerks {
+  extraLives: number;
+  shieldBonus: number;
+  fireRateMult: number;
+}
+
+function defaultRunPerks(): RunPerks {
+  return { extraLives: 0, shieldBonus: 0, fireRateMult: 1 };
+}
+
+interface PerkOption {
+  id: "extra-life" | "shield-boost" | "quick-reload";
+  label: string;
+  description: string;
+  icon: string;
+  apply: (perks: RunPerks) => RunPerks;
+}
+
+const PERK_OPTIONS: PerkOption[] = [
+  {
+    id: "extra-life",
+    label: "Extra Life",
+    description: "+1 max life, right now",
+    icon: "❤️",
+    apply: (p) => ({ ...p, extraLives: p.extraLives + 1 }),
+  },
+  {
+    id: "shield-boost",
+    label: "Shield Boost",
+    description: "+15 shield value every level from here on",
+    icon: "🛡️",
+    apply: (p) => ({ ...p, shieldBonus: p.shieldBonus + 15 }),
+  },
+  {
+    id: "quick-reload",
+    label: "Quick Reload",
+    description: "10% faster firing, every level from here on",
+    icon: "⚡",
+    apply: (p) => ({ ...p, fireRateMult: p.fireRateMult * 0.9 }),
+  },
+];
+
 // ---------------------------------------------------------------------
 // Locations screen geometry: a winding route through space (planet nodes
 // linked by a smooth curved path) rather than a flat list — climbing from
@@ -540,7 +588,13 @@ function makePlayers(
   });
 }
 
-function makeInitialState(width: number, height: number, level: number, playerIds: string[]): GameState {
+function makeInitialState(
+  width: number,
+  height: number,
+  level: number,
+  playerIds: string[],
+  runPerks: RunPerks
+): GameState {
   // Size, speed, and brightness all driven off the same random "depth" so
   // they stay consistent with each other — a star that's bigger and
   // brighter also moves faster, exactly like something genuinely closer to
@@ -589,7 +643,7 @@ function makeInitialState(width: number, height: number, level: number, playerId
     stars,
     nebulae,
     locationTheme,
-    baseFireInterval: perks.baseFireInterval,
+    baseFireInterval: perks.baseFireInterval * runPerks.fireRateMult,
     spawnTimer: 0.6,
     shieldTimer: 2 + Math.random() * 2,
     rapidFireTimer: 12 + Math.random() * 6,
@@ -1372,6 +1426,10 @@ export default function FighterGame() {
   // happen. Not React state: nothing needs to re-render off these ticking
   // up, only off an actual new achievement unlocking (see achievementToast).
   const lifetimeStatsRef = useRef<LifetimeStats>(readLifetimeStats());
+  // Player-chosen perks (see PERK_OPTIONS) stack for as long as the current
+  // playthrough lasts -- reset in backToMenu/handleQuit, a fresh run.
+  const runPerksRef = useRef<RunPerks>(defaultRunPerks());
+  const [pendingPerkChoice, setPendingPerkChoice] = useState(false);
   const [achievementToast, setAchievementToast] = useState<Achievement | null>(null);
   useEffect(() => {
     if (!achievementToast) return;
@@ -1608,7 +1666,8 @@ export default function FighterGame() {
     const el = containerRef.current;
     const width = el?.clientWidth ?? 360;
     const height = el?.clientHeight ?? 640;
-    stateRef.current = makeInitialState(width, height, level, playerIds);
+    const runPerks = role === "solo" ? runPerksRef.current : defaultRunPerks();
+    stateRef.current = makeInitialState(width, height, level, playerIds, runPerks);
     localPosRef.current = null;
     const spawnedLocal = stateRef.current.players.find((p) => p.id === localIdRef.current);
     if (spawnedLocal) {
@@ -1619,13 +1678,13 @@ export default function FighterGame() {
     scoresRef.current = playerIds.map(() => 0);
     setScores(scoresRef.current);
     const perks = perksForLocation(locationIndexForLevel(level));
-    const total = 3 + (playerIds.length - 1) + perks.extraLives;
+    const total = 3 + (playerIds.length - 1) + perks.extraLives + runPerks.extraLives;
     setMaxLives(total);
     maxLivesRef.current = total;
     setLives(total);
     livesRef.current = total;
-    setShieldTotal(perks.startingShieldValue);
-    shieldTotalRef.current = perks.startingShieldValue;
+    setShieldTotal(perks.startingShieldValue + runPerks.shieldBonus);
+    shieldTotalRef.current = perks.startingShieldValue + runPerks.shieldBonus;
     // Set synchronously (not just via the status-syncing effect) so the
     // game-loop closure never reads a stale ref for the one tick between
     // this call and the next React commit.
@@ -1754,6 +1813,8 @@ export default function FighterGame() {
     netRoleRef.current = "solo";
     statusRef.current = "ready";
     setStatus("ready");
+    runPerksRef.current = defaultRunPerks();
+    setPendingPerkChoice(false);
     // Started synchronously here (inside the click handler) rather than left
     // to the status-reactive effect -- some mobile browsers only honor
     // audio.play() when it's tied directly to the gesture's own call stack.
@@ -1765,12 +1826,47 @@ export default function FighterGame() {
     statusRef.current = "quit";
     setStatus("quit");
     musicPlayerRef.current?.stop();
+    runPerksRef.current = defaultRunPerks();
+    setPendingPerkChoice(false);
   };
 
+  // Login/register/session-restore all funnel through here. The account's
+  // server-side highScore/maxLevel is authoritative once logged in -- adopt
+  // it directly (not merged against whatever the local browser happens to
+  // be showing), and persist it locally too so a reload before the next
+  // /api/auth/me round trip still shows the right thing. On logout, reset
+  // local progress back to a clean slate: without this, a shared device
+  // would leak whichever account was just active into the next guest
+  // session or brand-new registration (the bug where a newly-created
+  // account inherited a previous account's level/score).
   const handleUserChange = (u: AuthUser | null) => {
+    // Distinguishes a real logout (there WAS a logged-in user a moment ago)
+    // from the initial "checked, nobody's logged in" mount call -- the
+    // latter must never touch a guest's local progress. userRef still holds
+    // the pre-update value here (it's synced via its own effect, so it
+    // lags one commit behind the state change we're in the middle of).
+    const wasLoggedIn = !!userRef.current;
     setUser(u);
     if (u) {
-      setBest((b) => Math.max(b, u.highScore));
+      setBest(u.highScore);
+      setUnlockedLevel(u.maxLevel);
+      setSoloStartLevel(u.maxLevel);
+      try {
+        window.localStorage.setItem("skyfighter-best", String(u.highScore));
+        window.localStorage.setItem(UNLOCKED_LEVEL_KEY, String(u.maxLevel));
+      } catch {
+        // ignore
+      }
+    } else if (wasLoggedIn) {
+      setBest(0);
+      setUnlockedLevel(1);
+      setSoloStartLevel(1);
+      try {
+        window.localStorage.setItem("skyfighter-best", "0");
+        window.localStorage.setItem(UNLOCKED_LEVEL_KEY, "1");
+      } catch {
+        // ignore
+      }
     }
   };
 
@@ -1803,7 +1899,7 @@ export default function FighterGame() {
           pl.targetY = pl.y;
         }
       } else {
-        stateRef.current = makeInitialState(width, height, 1, [localIdRef.current || "local"]);
+        stateRef.current = makeInitialState(width, height, 1, [localIdRef.current || "local"], defaultRunPerks());
       }
     };
     resize();
@@ -2829,6 +2925,7 @@ export default function FighterGame() {
         const crossedLocation = locationIndexForLevel(nextLevel) > locationIndexForLevel(s.level);
         setJustUnlockedLocation(crossedLocation ? getLocationName(locationIndexForLevel(nextLevel)) : null);
         setSoloStartLevel(nextLevel);
+        if (netRoleRef.current === "solo") setPendingPerkChoice(true);
         setUnlockedLevel((u) => {
           if (nextLevel <= u) return u;
           try {
@@ -3859,6 +3956,33 @@ export default function FighterGame() {
               Logout
             </button>
           )}
+        </div>
+      )}
+
+      {pendingPerkChoice && status === "levelcomplete" && isProgressiveRun && (
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-black/90 px-6 text-center text-white font-sans">
+          <h2 className="text-2xl font-extrabold">Choose a Perk</h2>
+          <p className="max-w-xs text-sm text-white/70">
+            Stacks for the rest of this run.
+          </p>
+          <div className="flex w-full max-w-xs flex-col gap-2.5">
+            {PERK_OPTIONS.map((opt) => (
+              <button
+                key={opt.id}
+                onClick={() => {
+                  runPerksRef.current = opt.apply(runPerksRef.current);
+                  setPendingPerkChoice(false);
+                }}
+                className="flex items-center gap-3 rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-left active:scale-95 transition-transform hover:bg-white/10"
+              >
+                <span className="text-2xl leading-none">{opt.icon}</span>
+                <div>
+                  <div className="text-sm font-bold">{opt.label}</div>
+                  <div className="text-xs text-white/60">{opt.description}</div>
+                </div>
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
