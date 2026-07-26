@@ -206,27 +206,27 @@ interface BossLoadout {
 }
 const BOSS_LOADOUTS: Record<BossLoadoutId, BossLoadout> = {
   rapid: {
-    label: "Rapid Barrage",
+    label: "Rapid Fire",
     icon: "🔫",
-    description: "Fastest regular fire rate",
+    description: "Fast guns",
     fireInterval: 0.045,
     missileInterval: 0.5,
     missileDamage: 8,
     bulletDamage: 1,
   },
   missiles: {
-    label: "Missile Storm",
+    label: "Missiles",
     icon: "🚀",
-    description: "Slower guns, much faster heavy missiles",
+    description: "Fast rockets",
     fireInterval: 0.09,
     missileInterval: 0.25,
     missileDamage: 8,
     bulletDamage: 1,
   },
   precision: {
-    label: "Precision Cannons",
+    label: "Precision",
     icon: "🎯",
-    description: "Moderate fire rate, double damage per shot",
+    description: "2x damage",
     fireInterval: 0.07,
     missileInterval: 0.5,
     missileDamage: 8,
@@ -235,16 +235,16 @@ const BOSS_LOADOUTS: Record<BossLoadoutId, BossLoadout> = {
   twinMissiles: {
     label: "Twin Missiles",
     icon: "🎇",
-    description: "Slower guns, near-constant heavy missiles",
+    description: "More rockets",
     fireInterval: 0.12,
     missileInterval: 0.15,
     missileDamage: 8,
     bulletDamage: 1,
   },
   overcharge: {
-    label: "Overcharge Cannon",
+    label: "Overcharge",
     icon: "💥",
-    description: "Slow but devastating shots, quadruple damage",
+    description: "4x damage",
     fireInterval: 0.16,
     missileInterval: 0.5,
     missileDamage: 8,
@@ -292,7 +292,15 @@ const CHAT_BUBBLE_DURATION = 3000;
 // mounting lag that eventually "hangs" once updates stop arriving).
 const BROADCAST_INTERVAL = 1 / 8;
 const INPUT_SEND_INTERVAL = 1 / 8;
-const MAX_SNAPSHOT_ENTITIES = 40;
+// Pusher also hard-caps a single client event's payload at 10KB -- a
+// snapshot with every array maxed out at the old cap of 40 measured out to
+// ~9.3KB in practice, dangerously close to that ceiling with essentially no
+// margin for Pusher's own envelope overhead. Since that ceiling is hit
+// hardest during exactly the busiest co-op moments (a wave of enemies plus
+// both players' bullets plus boss missiles/bombs), a payload that size would
+// occasionally get silently dropped right when the fight is at its most
+// intense -- reading as sudden lag/freezes. Lowered to keep real headroom.
+const MAX_SNAPSHOT_ENTITIES = 20;
 // Hard ceiling on simulated enemies at once, independent of the network
 // snapshot cap above -- the difficulty curve keeps climbing forever at deep
 // levels, and without this the bullet-vs-enemy collision pass (O(bullets ×
@@ -3829,11 +3837,11 @@ export default function FighterGame() {
                         for (const pl of s.players) pl.invuln = Math.max(pl.invuln, 1);
                       }
                     }}
-                    className="flex w-20 flex-col items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2 py-2 text-center active:scale-95 transition-transform hover:bg-white/10"
+                    className="flex w-24 flex-col items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2 py-2.5 text-center active:scale-95 transition-transform hover:bg-white/10"
                   >
-                    <span className="text-xl leading-none">{opt.icon}</span>
-                    <div className="text-[10px] font-bold leading-tight text-white">{opt.label}</div>
-                    <div className="text-[8px] leading-tight text-white/60">{opt.description}</div>
+                    <span className="text-2xl leading-none">{opt.icon}</span>
+                    <div className="text-sm font-bold leading-tight text-white">{opt.label}</div>
+                    <div className="text-xs leading-tight text-white/70">{opt.description}</div>
                   </button>
                 );
               })}
