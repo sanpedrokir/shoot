@@ -2817,17 +2817,6 @@ export default function FighterGame() {
               <div
                 className="pointer-events-none absolute rounded-full"
                 style={{
-                  left: "6%",
-                  bottom: 260,
-                  width: 46,
-                  height: 46,
-                  background: "radial-gradient(circle at 35% 30%, #cfe8ff, #3a6a9a 60%, #000 100%)",
-                  boxShadow: "0 0 16px 5px rgba(70,130,200,0.3)",
-                }}
-              />
-              <div
-                className="pointer-events-none absolute rounded-full"
-                style={{
                   right: "-10%",
                   bottom: 10,
                   width: 220,
