@@ -63,6 +63,14 @@ export interface ChatMessage {
   text: string;
 }
 
+// Sent by the ally to ask the host (the only client that actually
+// simulates) to fire the shared ultimate -- the host validates it's
+// actually charged before doing anything, same as if it had tapped its own
+// button.
+export interface UltimateMessage {
+  id: string;
+}
+
 export interface StartMessage {
   level: number;
   playerIds: string[];
@@ -93,6 +101,8 @@ export interface NetSnapshot {
   // Co-op revive: which player id (if any) is currently down, waiting for
   // their teammate to fly close enough to revive them.
   downedPlayerId: string | null;
+  // Shared ultimate meter, 0-100 -- either player can fire it once full.
+  ultimateCharge: number;
   players: NetPlayer[];
   enemies: {
     x: number;

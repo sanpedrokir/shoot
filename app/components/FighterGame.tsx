@@ -12,6 +12,7 @@ import {
   type StartMessage,
   type NetSnapshot,
   type ChatMessage,
+  type UltimateMessage,
 } from "../lib/coop";
 import { createMusicPlayer, type MusicPlayer } from "../lib/musicPlayer";
 import {
@@ -150,6 +151,9 @@ interface GameState {
   // revive them. Null means nobody's currently down.
   downedPlayerId: string | null;
   reviveDeadline: number;
+  // Shared ultimate meter, 0-ULTIMATE_MAX -- ticks up from kills, fired by
+  // consuming ultimateTriggerRef once full.
+  ultimateCharge: number;
   // Once per level, only on a milestone level (multiple of 5) -- the elite
   // enemy spawns alongside the midpoint wave.
   eliteSpawned: boolean;
@@ -240,6 +244,10 @@ const MAX_SNAPSHOT_ENTITIES = 40;
 // levels, and without this the bullet-vs-enemy collision pass (O(bullets ×
 // enemies) every frame) could grow unbounded over a very long/deep run.
 const MAX_LIVE_ENEMIES = 60;
+// Shared ultimate meter: fills from kills, either player can fire it once
+// full (see the client-ultimate wire message for how the ally's tap reaches
+// the host, the only client that actually simulates).
+const ULTIMATE_MAX = 100;
 
 // ---------------------------------------------------------------------
 // Locations: every level is its own named "location" the player travels
@@ -663,6 +671,7 @@ function makeInitialState(
     eliteSpawned: false,
     downedPlayerId: null,
     reviveDeadline: 0,
+    ultimateCharge: 0,
     shakeUntil: 0,
     shakeMagnitude: 0,
   };
@@ -1438,6 +1447,14 @@ export default function FighterGame() {
   // playthrough lasts -- reset in backToMenu/handleQuit, a fresh run.
   const runPerksRef = useRef<RunPerks>(defaultRunPerks());
   const [pendingPerkChoice, setPendingPerkChoice] = useState(false);
+  // Shared ultimate meter -- React state purely for the HUD button (both
+  // host and ally read/display this); the actual gameplay-affecting value
+  // lives on GameState.ultimateCharge and is only ever mutated by whichever
+  // client runs update() (host/solo). ultimateTriggerRef is how a tap
+  // (this client's own button, or the ally's relayed one) asks update() to
+  // fire it on the next frame.
+  const [ultimateCharge, setUltimateCharge] = useState(0);
+  const ultimateTriggerRef = useRef(false);
   const [achievementToast, setAchievementToast] = useState<Achievement | null>(null);
   useEffect(() => {
     if (!achievementToast) return;
@@ -1739,6 +1756,9 @@ export default function FighterGame() {
     channel.bind("client-chat", (data: ChatMessage) => {
       chatBubblesRef.current.set(data.id, { text: data.text, until: performance.now() + CHAT_BUBBLE_DURATION });
     });
+    channel.bind("client-ultimate", () => {
+      ultimateTriggerRef.current = true;
+    });
   };
 
   const hostStartOrRestart = () => {
@@ -1798,6 +1818,18 @@ export default function FighterGame() {
     chatBubblesRef.current.set(localIdRef.current, { text: trimmed, until: performance.now() + CHAT_BUBBLE_DURATION });
     setChatInput("");
     setShowChat(false);
+  };
+
+  // The host/solo trigger the ultimate directly (update() runs locally);
+  // the ally has no local simulation to flip a flag on, so it asks the
+  // host over the same client-event channel everything else co-op uses.
+  const fireUltimate = () => {
+    if (ultimateCharge < ULTIMATE_MAX) return;
+    if (netRoleRef.current === "ally") {
+      channelRef.current?.trigger("client-ultimate", { id: localIdRef.current } satisfies UltimateMessage);
+    } else {
+      ultimateTriggerRef.current = true;
+    }
   };
 
   const handleStart = () => {
@@ -2164,6 +2196,8 @@ export default function FighterGame() {
       s.levelDuration = snap.levelDuration;
       s.elapsed = snap.elapsed;
       s.downedPlayerId = snap.downedPlayerId;
+      s.ultimateCharge = snap.ultimateCharge;
+      setUltimateCharge(snap.ultimateCharge);
       const wantLocation = locationIndexForLevel(snap.level);
       if (s.locationTheme.index !== wantLocation) {
         s.locationTheme = getLocationTheme(wantLocation, s.width, s.height);
@@ -2259,6 +2293,7 @@ export default function FighterGame() {
         lives: livesRef.current,
         shieldTotal: shieldTotalRef.current,
         downedPlayerId: s.downedPlayerId,
+        ultimateCharge: s.ultimateCharge,
         players: s.players.map((pl, i) => ({
           id: pl.id,
           x: round1(pl.x),
@@ -2770,6 +2805,8 @@ export default function FighterGame() {
         lifetimeStatsRef.current.kills += deadEnemies.size;
         if ([...deadEnemies].some((en) => en.isBoss)) lifetimeStatsRef.current.bossKills += 1;
         recordLifetimeStats();
+        s.ultimateCharge = Math.min(ULTIMATE_MAX, s.ultimateCharge + deadEnemies.size * 4);
+        setUltimateCharge(s.ultimateCharge);
       }
       if (deadBullets.size) s.bullets = s.bullets.filter((b) => !deadBullets.has(b));
       if (scored) {
@@ -2856,6 +2893,7 @@ export default function FighterGame() {
                 if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 10;
               }
               lifetimeStatsRef.current.kills += regularEnemies.length;
+              s.ultimateCharge = Math.min(ULTIMATE_MAX, s.ultimateCharge + regularEnemies.length * 4);
               s.enemies = boss ? [boss] : [];
               if (boss) {
                 const damage = 12;
@@ -2876,10 +2914,51 @@ export default function FighterGame() {
               setScore(scoreRef.current);
               playEnemyHitSound();
               recordLifetimeStats();
+              setUltimateCharge(s.ultimateCharge);
             }
             s.smartBombs = s.smartBombs.filter((s2) => s2 !== sb);
             break;
           }
+        }
+      }
+
+      // Shared ultimate: consumed here regardless of which client's button
+      // set it (this client's own tap, or the ally's relayed one) -- only
+      // actually fires if genuinely full, so a stray/late trigger after the
+      // meter somehow isn't full yet is a harmless no-op.
+      if (ultimateTriggerRef.current) {
+        ultimateTriggerRef.current = false;
+        if (s.ultimateCharge >= ULTIMATE_MAX) {
+          s.ultimateCharge = 0;
+          setUltimateCharge(0);
+          s.missiles = [];
+          s.bombs = [];
+          const boss = s.enemies.find((en) => en.isBoss);
+          const regularEnemies = s.enemies.filter((en) => !en.isBoss);
+          for (const en of regularEnemies) {
+            spawnExplosion(s.particles, en.x, en.y, ["#c4b5fd", "#a78bfa", "#ffffff"]);
+          }
+          scoresRef.current[0] = (scoresRef.current[0] ?? 0) + regularEnemies.length * 10;
+          s.enemies = boss ? [boss] : [];
+          if (boss) {
+            const damage = Math.max(15, Math.floor((boss.maxHp ?? 1) * 0.3));
+            boss.hp = (boss.hp ?? 1) - damage;
+            spawnExplosion(s.particles, boss.x, boss.y, ["#c4b5fd", "#a78bfa", "#ffffff"], 26);
+            scoresRef.current[0] = (scoresRef.current[0] ?? 0) + damage * 2;
+            if (boss.hp <= 0) {
+              s.enemies = [];
+              spawnExplosion(s.particles, boss.x, boss.y, ["#c4b5fd", "#a78bfa", "#ffffff"], 40);
+              scoresRef.current[0] = (scoresRef.current[0] ?? 0) + 100;
+            }
+          }
+          for (const pl of s.players) {
+            pl.invuln = Math.max(pl.invuln, 2.5);
+          }
+          setScores([...scoresRef.current]);
+          scoreRef.current = scoresRef.current.reduce((sum, v) => sum + (v ?? 0), 0);
+          setScore(scoreRef.current);
+          triggerShake(s, 14, 0.6);
+          playEnemyHitSound();
         }
       }
 
@@ -3495,6 +3574,25 @@ export default function FighterGame() {
               className="pointer-events-auto rounded-lg bg-black/35 px-2.5 py-1.5 text-lg leading-none backdrop-blur-sm active:scale-95 transition-transform"
             >
               💬
+            </button>
+          )}
+          {status === "playing" && (
+            <button
+              onClick={fireUltimate}
+              disabled={ultimateCharge < ULTIMATE_MAX}
+              aria-label={ultimateCharge >= ULTIMATE_MAX ? "Fire ultimate" : `Ultimate charging, ${ultimateCharge}%`}
+              className={`pointer-events-auto relative rounded-lg px-2.5 py-1.5 text-lg leading-none backdrop-blur-sm transition-transform ${
+                ultimateCharge >= ULTIMATE_MAX
+                  ? "bg-violet-500/80 active:scale-95 animate-pulse"
+                  : "bg-black/35 opacity-60"
+              }`}
+            >
+              🌟
+              {ultimateCharge < ULTIMATE_MAX && (
+                <span className="absolute -bottom-1 -right-1 rounded-full bg-black/80 px-1 text-[8px] font-bold leading-tight text-white/80">
+                  {ultimateCharge}
+                </span>
+              )}
             </button>
           )}
           <button
