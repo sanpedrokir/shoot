@@ -812,18 +812,25 @@ function drawStar(ctx: CanvasRenderingContext2D, x: number, y: number, r: number
   ctx.fill();
 }
 
-function spawnExplosion(particles: Particle[], x: number, y: number, colorSet: string[], count = 18) {
+function spawnExplosion(
+  particles: Particle[],
+  x: number,
+  y: number,
+  colorSet: string[],
+  count = 18,
+  scale = 1
+) {
   for (let i = 0; i < count; i++) {
     const angle = Math.random() * Math.PI * 2;
-    const speed = 40 + Math.random() * 140;
+    const speed = (40 + Math.random() * 140) * scale;
     particles.push({
       x,
       y,
       vx: Math.cos(angle) * speed,
       vy: Math.sin(angle) * speed,
-      life: 0.4 + Math.random() * 0.5,
-      maxLife: 0.4 + Math.random() * 0.5,
-      size: 2 + Math.random() * 3.5,
+      life: (0.4 + Math.random() * 0.5) * Math.max(1, scale),
+      maxLife: (0.4 + Math.random() * 0.5) * Math.max(1, scale),
+      size: (2 + Math.random() * 3.5) * scale,
       color: colorSet[Math.floor(Math.random() * colorSet.length)],
     });
   }
@@ -1518,6 +1525,10 @@ export default function FighterGame() {
     const t = setTimeout(() => setBossChoiceVisible(false), 6000);
     return () => clearTimeout(t);
   }, [bossChoiceVisible]);
+  // Whether a boss is currently alive -- drives the HUD "change loadout"
+  // button (see bossChoiceVisible) so the player isn't stuck with whatever
+  // they picked (or the auto-picked default) for the rest of the fight.
+  const [bossFightActive, setBossFightActive] = useState(false);
   const [achievementToast, setAchievementToast] = useState<Achievement | null>(null);
   useEffect(() => {
     if (!achievementToast) return;
@@ -1756,6 +1767,8 @@ export default function FighterGame() {
     const height = el?.clientHeight ?? 640;
     const runPerks = role === "solo" ? runPerksRef.current : defaultRunPerks();
     stateRef.current = makeInitialState(width, height, level, playerIds, runPerks);
+    setBossFightActive(false);
+    setBossChoiceVisible(false);
     localPosRef.current = null;
     const spawnedLocal = stateRef.current.players.find((p) => p.id === localIdRef.current);
     if (spawnedLocal) {
@@ -1918,6 +1931,8 @@ export default function FighterGame() {
     setStatus("ready");
     runPerksRef.current = defaultRunPerks();
     setPendingPerkChoice(false);
+    setBossFightActive(false);
+    setBossChoiceVisible(false);
     // Started synchronously here (inside the click handler) rather than left
     // to the status-reactive effect -- some mobile browsers only honor
     // audio.play() when it's tied directly to the gesture's own call stack.
@@ -1931,6 +1946,8 @@ export default function FighterGame() {
     musicPlayerRef.current?.stop();
     runPerksRef.current = defaultRunPerks();
     setPendingPerkChoice(false);
+    setBossFightActive(false);
+    setBossChoiceVisible(false);
   };
 
   // Login/register/session-restore all funnel through here. The account's
@@ -2642,14 +2659,18 @@ export default function FighterGame() {
       if (!s.bossSpawned && timeLeft <= 25) {
         s.bossSpawned = true;
         s.enemies = [];
-        // Tuned for the boosted fire rate + heavy missile bonus above to
-        // bring it down over the fight's 25-second window with sustained,
-        // accurate fire -- a tense duel, not an instant kill or a stalemate.
+        // Tuned against the player's actual sustained boss-fight dps (the
+        // boss sits dead center and never dodges, so accuracy runs high --
+        // a low hp pool here dies in a couple of seconds flat, which is
+        // exactly the "too easy" problem this was retuned to fix). At the
+        // best loadout's ~70-75 dps this aims for a real multi-second duel
+        // (roughly 10-17s depending on level/loadout/accuracy) instead of
+        // an instant kill, with room to spare before the 25s window closes.
         // The difficulty term is deliberately the steepest lever here (vs.
-        // co-op's flatter +65/player) so depth is what actually makes the
+        // co-op's flatter +700/player) so depth is what actually makes the
         // fight harder to finish, on top of it also firing faster (see the
         // fire/bomb timer formulas below).
-        const maxHp = 150 + extraPlayers * 65 + Math.floor(difficulty * 12);
+        const maxHp = 700 + extraPlayers * 700 + Math.floor(difficulty * 55);
         s.enemies.push({
           x: s.width / 2,
           y: s.height * 0.24,
@@ -2668,6 +2689,7 @@ export default function FighterGame() {
         // (see the bossChoiceVisible effect) and "rapid" just keeps firing.
         bossLoadoutRef.current = "rapid";
         setBossChoiceVisible(true);
+        setBossFightActive(true);
         playBossRoarSound();
       }
 
@@ -2864,19 +2886,21 @@ export default function FighterGame() {
               }
               if (en.hp <= 0) {
                 deadEnemies.add(en);
-                spawnExplosion(s.particles, en.x, en.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], en.isBoss ? 60 : 16);
+                spawnExplosion(s.particles, en.x, en.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], en.isBoss ? 70 : 16, en.isBoss ? 2.4 : 1);
                 if (en.isBoss) {
                   // A single burst reads as a regular enemy dying, just
-                  // bigger -- a few staggered bursts around it instead reads
-                  // as the whole plane breaking apart, no on-screen text
-                  // needed to sell "boss defeated".
-                  for (let i = 0; i < 4; i++) {
-                    const ox = (Math.random() - 0.5) * ENEMY_RADIUS * en.scale * 1.6;
-                    const oy = (Math.random() - 0.5) * ENEMY_RADIUS * en.scale * 1.6;
-                    spawnExplosion(s.particles, en.x + ox, en.y + oy, ["#ffcf5c", "#ff7a3c", "#ff3b3b", "#8a8f96"], 22);
+                  // bigger -- several bigger, wide-flung staggered bursts
+                  // around it instead reads as the whole plane breaking
+                  // apart, no on-screen text needed to sell "boss defeated".
+                  for (let i = 0; i < 5; i++) {
+                    const ox = (Math.random() - 0.5) * ENEMY_RADIUS * en.scale * 2.4;
+                    const oy = (Math.random() - 0.5) * ENEMY_RADIUS * en.scale * 2.4;
+                    spawnExplosion(s.particles, en.x + ox, en.y + oy, ["#ffcf5c", "#ff7a3c", "#ff3b3b", "#8a8f96"], 26, 1.8);
                   }
-                  triggerShake(s, 20, 0.7);
+                  triggerShake(s, 26, 0.9);
                   if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 100;
+                  setBossFightActive(false);
+                  setBossChoiceVisible(false);
                 }
               }
             } else {
@@ -2993,16 +3017,18 @@ export default function FighterGame() {
                 if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + damage * 2;
                 if (boss.hp <= 0) {
                   s.enemies = [];
-                  spawnExplosion(s.particles, boss.x, boss.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], 60);
-                  for (let i = 0; i < 4; i++) {
-                    const ox = (Math.random() - 0.5) * ENEMY_RADIUS * boss.scale * 1.6;
-                    const oy = (Math.random() - 0.5) * ENEMY_RADIUS * boss.scale * 1.6;
-                    spawnExplosion(s.particles, boss.x + ox, boss.y + oy, ["#ffcf5c", "#ff7a3c", "#ff3b3b", "#8a8f96"], 22);
+                  spawnExplosion(s.particles, boss.x, boss.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], 70, 2.4);
+                  for (let i = 0; i < 5; i++) {
+                    const ox = (Math.random() - 0.5) * ENEMY_RADIUS * boss.scale * 2.4;
+                    const oy = (Math.random() - 0.5) * ENEMY_RADIUS * boss.scale * 2.4;
+                    spawnExplosion(s.particles, boss.x + ox, boss.y + oy, ["#ffcf5c", "#ff7a3c", "#ff3b3b", "#8a8f96"], 26, 1.8);
                   }
-                  triggerShake(s, 20, 0.7);
+                  triggerShake(s, 26, 0.9);
                   if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 100;
                   lifetimeStatsRef.current.kills += 1;
                   lifetimeStatsRef.current.bossKills += 1;
+                  setBossFightActive(false);
+                  setBossChoiceVisible(false);
                 }
               }
               setScores([...scoresRef.current]);
@@ -3709,6 +3735,15 @@ export default function FighterGame() {
               💬
             </button>
           )}
+          {bossFightActive && !isAlly && status === "playing" && (
+            <button
+              onClick={() => setBossChoiceVisible(true)}
+              aria-label="Change boss firepower loadout"
+              className="pointer-events-auto rounded-lg bg-black/35 px-2.5 py-1.5 text-lg leading-none backdrop-blur-sm active:scale-95 transition-transform"
+            >
+              🔫
+            </button>
+          )}
           {status === "playing" && (
             <button
               onClick={fireUltimate}
@@ -3716,7 +3751,7 @@ export default function FighterGame() {
               aria-label={ultimateCharge >= ULTIMATE_MAX ? "Fire ultimate" : `Ultimate charging, ${ultimateCharge}%`}
               className={`pointer-events-auto relative rounded-lg px-2.5 py-1.5 text-lg leading-none backdrop-blur-sm transition-transform ${
                 ultimateCharge >= ULTIMATE_MAX
-                  ? "bg-violet-500/80 active:scale-95 animate-pulse"
+                  ? "bg-violet-500/80 active:scale-95 shadow-[0_0_10px_2px_rgba(167,139,250,0.7)]"
                   : "bg-black/35 opacity-60"
               }`}
             >
