@@ -206,3 +206,58 @@ export function playSmartBombPickupSound() {
     // Sound is a nice-to-have — never let it block gameplay.
   }
 }
+
+// A low, growling "roar" for the boss's arrival — a detuned pair of low
+// sawtooth oscillators (for a rough, beating growl rather than one clean
+// tone) plus filtered noise rumble underneath, both swept down in pitch and
+// a low-pass filter opened up briefly to give it a "getting closer" bite.
+export function playBossRoarSound() {
+  const audioCtx = getContext();
+  if (!audioCtx) return;
+  try {
+    const now = audioCtx.currentTime;
+    const duration = 1.3;
+
+    const master = audioCtx.createGain();
+    master.gain.setValueAtTime(0, now);
+    master.gain.linearRampToValueAtTime(0.35, now + 0.08);
+    master.gain.linearRampToValueAtTime(0.3, now + duration * 0.6);
+    master.gain.exponentialRampToValueAtTime(0.001, now + duration);
+    master.connect(audioCtx.destination);
+
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.setValueAtTime(220, now);
+    filter.frequency.linearRampToValueAtTime(900, now + duration * 0.35);
+    filter.frequency.linearRampToValueAtTime(140, now + duration);
+    filter.connect(master);
+
+    for (const detune of [-6, 6]) {
+      const osc = audioCtx.createOscillator();
+      osc.type = "sawtooth";
+      osc.detune.value = detune;
+      osc.frequency.setValueAtTime(95, now);
+      osc.frequency.linearRampToValueAtTime(140, now + duration * 0.3);
+      osc.frequency.exponentialRampToValueAtTime(55, now + duration);
+      osc.connect(filter);
+      osc.start(now);
+      osc.stop(now + duration);
+    }
+
+    const noiseSize = Math.floor(audioCtx.sampleRate * duration);
+    const noiseBuffer = audioCtx.createBuffer(1, noiseSize, audioCtx.sampleRate);
+    const data = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < noiseSize; i++) data[i] = Math.random() * 2 - 1;
+    const noise = audioCtx.createBufferSource();
+    noise.buffer = noiseBuffer;
+    const noiseGain = audioCtx.createGain();
+    noiseGain.gain.setValueAtTime(0.15, now);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+    noise.connect(noiseGain);
+    noiseGain.connect(filter);
+    noise.start(now);
+    noise.stop(now + duration);
+  } catch {
+    // Sound is a nice-to-have — never let it block gameplay.
+  }
+}

@@ -21,6 +21,7 @@ import {
   playShieldPickupSound,
   playRapidFireSound,
   playSmartBombPickupSound,
+  playBossRoarSound,
   primeAudioContext,
 } from "../lib/sfx";
 import {
@@ -38,8 +39,8 @@ import AuthPanel, { type AuthUser, type AuthPanelHandle, type LeaderboardTop } f
 // the boss is alive — bigger, slower-firing, and much higher damage against
 // it than a regular bullet.
 type Bullet = { x: number; y: number; vy: number; ownerId: string; rapid: boolean; heavy?: boolean };
-type Missile = { x: number; y: number; vy: number; vx: number };
-type Bomb = { x: number; y: number; vy: number; rot: number };
+type Missile = { x: number; y: number; vy: number; vx: number; fromBoss?: boolean };
+type Bomb = { x: number; y: number; vy: number; rot: number; fromBoss?: boolean };
 type Shield = { x: number; y: number; vy: number; phase: number };
 type RapidFire = { x: number; y: number; vy: number; phase: number };
 type SmartBomb = { x: number; y: number; vy: number; phase: number };
@@ -187,12 +188,12 @@ const RAPIDFIRE_HIT_RADIUS = 18;
 // Normal fire interval is 0.18s; rapid fire roughly triples the rate for a
 // limited window rather than being a permanent upgrade.
 const RAPIDFIRE_INTERVAL = 0.06;
-// Three player firepower loadouts, offered as a choice the moment the boss
+// Five player firepower loadouts, offered as a choice the moment the boss
 // spawns (see bossChoiceVisible) -- each trades off differently, but all
-// are tuned to feel genuinely killable within the boss's ~15 second window
+// are tuned to feel genuinely killable within the boss's ~25 second window
 // given sustained, reasonably accurate fire, not just "a bit more fire" on
 // top of a boss with a lot of hp.
-type BossLoadoutId = "rapid" | "missiles" | "precision";
+type BossLoadoutId = "rapid" | "missiles" | "precision" | "twinMissiles" | "overcharge";
 interface BossLoadout {
   label: string;
   icon: string;
@@ -229,6 +230,24 @@ const BOSS_LOADOUTS: Record<BossLoadoutId, BossLoadout> = {
     missileInterval: 0.5,
     missileDamage: 8,
     bulletDamage: 2,
+  },
+  twinMissiles: {
+    label: "Twin Missiles",
+    icon: "🎇",
+    description: "Slower guns, near-constant heavy missiles",
+    fireInterval: 0.12,
+    missileInterval: 0.15,
+    missileDamage: 8,
+    bulletDamage: 1,
+  },
+  overcharge: {
+    label: "Overcharge Cannon",
+    icon: "💥",
+    description: "Slow but devastating shots, quadruple damage",
+    fireInterval: 0.16,
+    missileInterval: 0.5,
+    missileDamage: 8,
+    bulletDamage: 4,
   },
 };
 const RAPIDFIRE_DURATION = 8;
@@ -2100,6 +2119,13 @@ export default function FighterGame() {
                 if (latestSnapshotRef.current.score - prevSnap.score >= 50) {
                   triggerShake(s, 12, 0.5);
                 }
+                // Boss arrival, detected the same zero-extra-traffic way --
+                // the enemies array (already part of every snapshot) just
+                // gained an isBoss entry it didn't have last snapshot.
+                const bossJustArrived =
+                  !prevSnap.enemies.some((e) => e.isBoss) &&
+                  latestSnapshotRef.current.enemies.some((e) => e.isBoss);
+                if (bossJustArrived) playBossRoarSound();
               }
             }
             extrapolateAlly(s, dt);
@@ -2295,8 +2321,9 @@ export default function FighterGame() {
         y: nm.y * scaleY,
         vx: nm.vx,
         vy: nm.vy,
+        fromBoss: nm.fromBoss,
       }));
-      s.bombs = snap.bombs.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: nb.vy, rot: nb.rot }));
+      s.bombs = snap.bombs.map((nb) => ({ x: nb.x * scaleX, y: nb.y * scaleY, vy: nb.vy, rot: nb.rot, fromBoss: nb.fromBoss }));
       s.bullets = snap.bullets.map((nb) => ({
         x: nb.x * scaleX,
         y: nb.y * scaleY,
@@ -2377,10 +2404,10 @@ export default function FighterGame() {
           })),
         missiles: s.missiles
           .slice(0, MAX_SNAPSHOT_ENTITIES)
-          .map((m) => ({ x: round1(m.x), y: round1(m.y), vx: round1(m.vx), vy: round1(m.vy) })),
+          .map((m) => ({ x: round1(m.x), y: round1(m.y), vx: round1(m.vx), vy: round1(m.vy), fromBoss: m.fromBoss })),
         bombs: s.bombs
           .slice(0, MAX_SNAPSHOT_ENTITIES)
-          .map((b) => ({ x: round1(b.x), y: round1(b.y), vy: round1(b.vy), rot: round1(b.rot) })),
+          .map((b) => ({ x: round1(b.x), y: round1(b.y), vy: round1(b.vy), rot: round1(b.rot), fromBoss: b.fromBoss })),
         bullets: s.bullets
           .slice(0, MAX_SNAPSHOT_ENTITIES)
           .map((b) => ({ x: round1(b.x), y: round1(b.y), vy: round1(b.vy), rapid: b.rapid, heavy: b.heavy })),
@@ -2498,7 +2525,7 @@ export default function FighterGame() {
       // falling in around it.
       if (s.spawnTimer <= 0 && !s.bossSpawned) {
         s.spawnTimer =
-          (clamp(1.6 - difficulty * 0.5 - swarmFocus * 0.3, 0.45, 1.6) + Math.random() * 0.3) /
+          (clamp(1.8 - difficulty * 0.35 - swarmFocus * 0.3, 0.7, 1.8) + Math.random() * 0.35) /
           (1 + extraPlayers * 0.35);
         // Every burst is at least a pair so the wedge formation always reads
         // as a squadron arriving together — plus up to five extra enemies
@@ -2510,7 +2537,7 @@ export default function FighterGame() {
         // level-scaled bonus so deep runs get visibly bigger squadrons and
         // not just a spawn timer that's already hit its floor.
         const extraSwarm = Math.min(1, Math.floor(swarmFocus * 2.2));
-        const difficultySwarm = Math.floor(difficulty / 2.5);
+        const difficultySwarm = Math.floor(difficulty / 4);
         const coopPlaneBonus = Math.round(extraPlayers * coopBonusIntensity(swarmFocus) * 5);
         const desiredCount = 2 + coopPlaneBonus + extraSwarm + difficultySwarm;
         // Hard-capped against MAX_LIVE_ENEMIES so an extremely deep/long run
@@ -2534,7 +2561,7 @@ export default function FighterGame() {
               phase: Math.random() * Math.PI * 2,
               amp: 20 + Math.random() * 40,
               scale: 0.85 + Math.random() * 0.35,
-              fireTimer: 1.8 + Math.random() * 1.8,
+              fireTimer: 0.5 + Math.random() * 1.0,
               bombTimer: 1.2 + Math.random() * 2.2,
               kind,
               hp: kind === "tanky" ? 2 : undefined,
@@ -2571,7 +2598,7 @@ export default function FighterGame() {
             phase: Math.random() * Math.PI * 2,
             amp: 15 + Math.random() * 25,
             scale: 0.8 + Math.random() * 0.3,
-            fireTimer: 1.8 + Math.random() * 1.8,
+            fireTimer: 0.5 + Math.random() * 1.0,
             bombTimer: 1.2 + Math.random() * 2.2,
           });
         }
@@ -2592,7 +2619,7 @@ export default function FighterGame() {
             phase: Math.random() * Math.PI * 2,
             amp: 30,
             scale: 1.8,
-            fireTimer: 1.4,
+            fireTimer: 0.8,
             bombTimer: 1.8,
             kind: "elite",
             hp: eliteHp,
@@ -2601,7 +2628,7 @@ export default function FighterGame() {
         }
       }
 
-      // Boss: with 15 seconds left on the clock, every regular enemy is
+      // Boss: with 25 seconds left on the clock, every regular enemy is
       // cleared out and a single massive "monster" plane takes their place —
       // fixed in one spot (no drift/orbit at all), so it's a clean, focused
       // shooting gallery rather than something that has to be chased or that
@@ -2612,17 +2639,17 @@ export default function FighterGame() {
       // destroyed early — that's the reward for doing it). Every player
       // gets a firepower boost the moment it arrives (see bossActive above)
       // so it's a real fight, not a stalemate.
-      if (!s.bossSpawned && timeLeft <= 15) {
+      if (!s.bossSpawned && timeLeft <= 25) {
         s.bossSpawned = true;
         s.enemies = [];
         // Tuned for the boosted fire rate + heavy missile bonus above to
-        // bring it down over several seconds of sustained, accurate fire —
-        // a tense duel, not an instant kill or a stalemate. The difficulty
-        // term is deliberately the steepest lever here (vs. co-op's flatter
-        // +40/player) so depth is what actually makes the fight harder to
-        // finish, on top of it also firing faster (see the fire/bomb timer
-        // formulas above).
-        const maxHp = 95 + extraPlayers * 40 + Math.floor(difficulty * 7);
+        // bring it down over the fight's 25-second window with sustained,
+        // accurate fire -- a tense duel, not an instant kill or a stalemate.
+        // The difficulty term is deliberately the steepest lever here (vs.
+        // co-op's flatter +65/player) so depth is what actually makes the
+        // fight harder to finish, on top of it also firing faster (see the
+        // fire/bomb timer formulas below).
+        const maxHp = 150 + extraPlayers * 65 + Math.floor(difficulty * 12);
         s.enemies.push({
           x: s.width / 2,
           y: s.height * 0.24,
@@ -2641,6 +2668,7 @@ export default function FighterGame() {
         // (see the bossChoiceVisible effect) and "rapid" just keeps firing.
         bossLoadoutRef.current = "rapid";
         setBossChoiceVisible(true);
+        playBossRoarSound();
       }
 
       for (const en of s.enemies) {
@@ -2697,6 +2725,7 @@ export default function FighterGame() {
               y: en.y + 10,
               vy: (dy / len) * 190 + 80,
               vx: (dx / len) * 100,
+              fromBoss: en.isBoss,
             });
           }
         }
@@ -2715,7 +2744,7 @@ export default function FighterGame() {
           // window (so bombs don't all pile up and burst the moment it
           // ends) — only the actual drop is held back.
           if (s.elapsed >= s.bombsSuppressedUntil) {
-            s.bombs.push({ x: en.x, y: en.y + 12, vy: 40, rot: Math.random() * Math.PI * 2 });
+            s.bombs.push({ x: en.x, y: en.y + 12, vy: 40, rot: Math.random() * Math.PI * 2, fromBoss: en.isBoss });
           }
         }
       }
@@ -2835,9 +2864,18 @@ export default function FighterGame() {
               }
               if (en.hp <= 0) {
                 deadEnemies.add(en);
-                spawnExplosion(s.particles, en.x, en.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], en.isBoss ? 40 : 16);
+                spawnExplosion(s.particles, en.x, en.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], en.isBoss ? 60 : 16);
                 if (en.isBoss) {
-                  triggerShake(s, 12, 0.5);
+                  // A single burst reads as a regular enemy dying, just
+                  // bigger -- a few staggered bursts around it instead reads
+                  // as the whole plane breaking apart, no on-screen text
+                  // needed to sell "boss defeated".
+                  for (let i = 0; i < 4; i++) {
+                    const ox = (Math.random() - 0.5) * ENEMY_RADIUS * en.scale * 1.6;
+                    const oy = (Math.random() - 0.5) * ENEMY_RADIUS * en.scale * 1.6;
+                    spawnExplosion(s.particles, en.x + ox, en.y + oy, ["#ffcf5c", "#ff7a3c", "#ff3b3b", "#8a8f96"], 22);
+                  }
+                  triggerShake(s, 20, 0.7);
                   if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 100;
                 }
               }
@@ -2955,8 +2993,13 @@ export default function FighterGame() {
                 if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + damage * 2;
                 if (boss.hp <= 0) {
                   s.enemies = [];
-                  spawnExplosion(s.particles, boss.x, boss.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], 40);
-                  triggerShake(s, 12, 0.5);
+                  spawnExplosion(s.particles, boss.x, boss.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], 60);
+                  for (let i = 0; i < 4; i++) {
+                    const ox = (Math.random() - 0.5) * ENEMY_RADIUS * boss.scale * 1.6;
+                    const oy = (Math.random() - 0.5) * ENEMY_RADIUS * boss.scale * 1.6;
+                    spawnExplosion(s.particles, boss.x + ox, boss.y + oy, ["#ffcf5c", "#ff7a3c", "#ff3b3b", "#8a8f96"], 22);
+                  }
+                  triggerShake(s, 20, 0.7);
                   if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 100;
                   lifetimeStatsRef.current.kills += 1;
                   lifetimeStatsRef.current.bossKills += 1;
@@ -3220,20 +3263,42 @@ export default function FighterGame() {
         c.restore();
       }
 
-      // missiles
+      // missiles — boss-fired ones get a red glow and are drawn noticeably
+      // bigger, so its barrage reads as a real threat rather than the same
+      // pot-shot a regular enemy takes.
       for (const m of s.missiles) {
         c.save();
         c.translate(m.x, m.y);
+        if (m.fromBoss) {
+          const glow = c.createRadialGradient(0, 0, 0, 0, 0, 16);
+          glow.addColorStop(0, "rgba(255,60,30,0.65)");
+          glow.addColorStop(1, "rgba(255,60,30,0)");
+          c.fillStyle = glow;
+          c.beginPath();
+          c.arc(0, 0, 16, 0, Math.PI * 2);
+          c.fill();
+          c.scale(1.7, 1.7);
+        }
         const angle = Math.atan2(m.vy, m.vx) - Math.PI / 2;
         c.rotate(angle);
         drawMissile(c, Math.sin(s.elapsed * 30) * 0.8);
         c.restore();
       }
 
-      // bombs
+      // bombs — same boss-scary treatment as missiles above.
       for (const bm of s.bombs) {
         c.save();
         c.translate(bm.x, bm.y);
+        if (bm.fromBoss) {
+          const glow = c.createRadialGradient(0, 0, 0, 0, 0, 18);
+          glow.addColorStop(0, "rgba(255,60,30,0.6)");
+          glow.addColorStop(1, "rgba(255,60,30,0)");
+          c.fillStyle = glow;
+          c.beginPath();
+          c.arc(0, 0, 18, 0, Math.PI * 2);
+          c.fill();
+          c.scale(1.6, 1.6);
+        }
         c.rotate(bm.rot);
         drawBomb(c);
         c.restore();
@@ -3279,6 +3344,21 @@ export default function FighterGame() {
       for (const en of s.enemies) {
         c.save();
         c.translate(en.x, en.y);
+        if (en.isBoss) {
+          // A pulsing red/orange aura behind the boss -- reads as menacing
+          // heat/energy radiating off it, distinct from every other sprite
+          // on screen which have no glow at all.
+          const glowPulse = 0.75 + Math.sin(s.elapsed * 5) * 0.25;
+          const glowRadius = ENEMY_RADIUS * en.scale * 2.2 * glowPulse;
+          const glow = c.createRadialGradient(0, 0, 0, 0, 0, glowRadius);
+          glow.addColorStop(0, "rgba(255,90,40,0.55)");
+          glow.addColorStop(0.55, "rgba(255,40,20,0.25)");
+          glow.addColorStop(1, "rgba(255,40,20,0)");
+          c.fillStyle = glow;
+          c.beginPath();
+          c.arc(0, 0, glowRadius, 0, Math.PI * 2);
+          c.fill();
+        }
         drawJetShadow(c, en.scale);
         c.rotate(Math.PI);
         // Regular-enemy variety is recolored via canvas filter rather than
@@ -3659,12 +3739,12 @@ export default function FighterGame() {
       </div>
 
       {bossChoiceVisible && status === "playing" && (
-        <div className="pointer-events-none absolute inset-x-0 top-16 z-50 flex justify-center px-4 font-sans">
+        <div className="pointer-events-none absolute inset-x-0 bottom-6 z-50 flex justify-center px-4 font-sans">
           <div className="pointer-events-auto flex flex-col items-center gap-2 rounded-xl border border-red-400/40 bg-black/85 px-4 py-3 shadow-lg shadow-black/40">
             <div className="text-xs font-bold uppercase tracking-wide text-red-300/90">
               Boss Firepower — Choose One
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap justify-center gap-2">
               {(Object.keys(BOSS_LOADOUTS) as BossLoadoutId[]).map((id) => {
                 const opt = BOSS_LOADOUTS[id];
                 return (
@@ -3674,11 +3754,11 @@ export default function FighterGame() {
                       bossLoadoutRef.current = id;
                       setBossChoiceVisible(false);
                     }}
-                    className="flex w-24 flex-col items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2 py-2 text-center active:scale-95 transition-transform hover:bg-white/10"
+                    className="flex w-20 flex-col items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2 py-2 text-center active:scale-95 transition-transform hover:bg-white/10"
                   >
                     <span className="text-xl leading-none">{opt.icon}</span>
-                    <div className="text-[11px] font-bold leading-tight text-white">{opt.label}</div>
-                    <div className="text-[9px] leading-tight text-white/60">{opt.description}</div>
+                    <div className="text-[10px] font-bold leading-tight text-white">{opt.label}</div>
+                    <div className="text-[8px] leading-tight text-white/60">{opt.description}</div>
                   </button>
                 );
               })}

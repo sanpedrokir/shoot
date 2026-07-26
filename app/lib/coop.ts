@@ -117,8 +117,8 @@ export interface NetSnapshot {
     maxHp?: number;
     kind?: "dodger" | "tanky" | "elite";
   }[];
-  missiles: { x: number; y: number; vx: number; vy: number }[];
-  bombs: { x: number; y: number; vy: number; rot: number }[];
+  missiles: { x: number; y: number; vx: number; vy: number; fromBoss?: boolean }[];
+  bombs: { x: number; y: number; vy: number; rot: number; fromBoss?: boolean }[];
   bullets: { x: number; y: number; vy: number; rapid: boolean; heavy?: boolean }[];
   shields: { x: number; y: number; vy: number }[];
   rapidFires: { x: number; y: number; vy: number }[];
