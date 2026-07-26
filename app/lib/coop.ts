@@ -71,6 +71,13 @@ export interface UltimateMessage {
   id: string;
 }
 
+// Same relay shape/purpose as UltimateMessage above, for the one-tap "Boss
+// Blast" special attack -- the host validates it's actually off cooldown
+// before doing anything.
+export interface BossBlastMessage {
+  id: string;
+}
+
 export interface StartMessage {
   level: number;
   playerIds: string[];
@@ -103,6 +110,8 @@ export interface NetSnapshot {
   downedPlayerId: string | null;
   // Shared ultimate meter, 0-100 -- either player can fire it once full.
   ultimateCharge: number;
+  // Whether the one-tap Boss Blast special is currently off cooldown.
+  bossBlastReady: boolean;
   players: NetPlayer[];
   enemies: {
     x: number;

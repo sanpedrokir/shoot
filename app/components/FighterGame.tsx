@@ -13,6 +13,7 @@ import {
   type NetSnapshot,
   type ChatMessage,
   type UltimateMessage,
+  type BossBlastMessage,
 } from "../lib/coop";
 import { createMusicPlayer, type MusicPlayer } from "../lib/musicPlayer";
 import {
@@ -147,6 +148,9 @@ interface GameState {
   bombsSuppressedUntil: number;
   // Same host/solo-only pattern for the final-15-seconds boss.
   bossSpawned: boolean;
+  // Seconds remaining until Boss Blast (the one-tap special attack) is
+  // usable again -- 0 means ready. Only meaningful while a boss is alive.
+  bossBlastCooldown: number;
   // Co-op only: when the shared life pool would hit 0, the player who took
   // that hit goes "down" (safe, can't fire) instead of the game ending
   // immediately -- their teammate has reviveDeadline to fly over and
@@ -189,68 +193,19 @@ const RAPIDFIRE_HIT_RADIUS = 18;
 // Normal fire interval is 0.18s; rapid fire roughly triples the rate for a
 // limited window rather than being a permanent upgrade.
 const RAPIDFIRE_INTERVAL = 0.06;
-// Five player firepower loadouts, offered as a choice the moment the boss
-// spawns (see bossChoiceVisible) -- each trades off differently, but all
-// are tuned to feel genuinely killable within the boss's ~25 second window
-// given sustained, reasonably accurate fire, not just "a bit more fire" on
-// top of a boss with a lot of hp.
-type BossLoadoutId = "rapid" | "missiles" | "precision" | "twinMissiles" | "overcharge";
-interface BossLoadout {
-  label: string;
-  icon: string;
-  description: string;
-  fireInterval: number; // regular bullet cadence while a boss is alive
-  missileInterval: number; // heavy bolt cadence
-  missileDamage: number;
-  bulletDamage: number; // regular bullet damage against the boss specifically
-}
-const BOSS_LOADOUTS: Record<BossLoadoutId, BossLoadout> = {
-  rapid: {
-    label: "Rapid Fire",
-    icon: "🔫",
-    description: "Fast guns",
-    fireInterval: 0.045,
-    missileInterval: 0.5,
-    missileDamage: 8,
-    bulletDamage: 1,
-  },
-  missiles: {
-    label: "Missiles",
-    icon: "🚀",
-    description: "Fast rockets",
-    fireInterval: 0.09,
-    missileInterval: 0.25,
-    missileDamage: 8,
-    bulletDamage: 1,
-  },
-  precision: {
-    label: "Precision",
-    icon: "🎯",
-    description: "2x damage",
-    fireInterval: 0.07,
-    missileInterval: 0.5,
-    missileDamage: 8,
-    bulletDamage: 2,
-  },
-  twinMissiles: {
-    label: "Twin Missiles",
-    icon: "🎇",
-    description: "More rockets",
-    fireInterval: 0.12,
-    missileInterval: 0.15,
-    missileDamage: 8,
-    bulletDamage: 1,
-  },
-  overcharge: {
-    label: "Overcharge",
-    icon: "💥",
-    description: "4x damage",
-    fireInterval: 0.16,
-    missileInterval: 0.5,
-    missileDamage: 8,
-    bulletDamage: 4,
-  },
-};
+// Fixed player firepower while a boss is alive -- was previously a choice of
+// 5 loadouts offered on a menu, replaced with a single one-tap "Boss Blast"
+// button instead (see BOSS_BLAST_COOLDOWN below) since reading/picking from
+// a menu mid-fight was unwanted friction.
+const BOSS_FIRE_INTERVAL = 0.045;
+const BOSS_MISSILE_INTERVAL = 0.5;
+const BOSS_MISSILE_DAMAGE = 8;
+// One-tap special attack, available the instant the boss spawns and again
+// every BOSS_BLAST_COOLDOWN seconds after each use -- a big, no-menu-required
+// chunk of damage (see fireBossBlast) so there's still a satisfying "finish
+// it!" button without any reading required mid-fight.
+const BOSS_BLAST_COOLDOWN = 12;
+const BOSS_BLAST_DAMAGE_FRACTION = 0.2;
 const RAPIDFIRE_DURATION = 8;
 
 const SMARTBOMB_HIT_RADIUS = 18;
@@ -470,38 +425,6 @@ interface RunPerks {
 function defaultRunPerks(): RunPerks {
   return { extraLives: 0, shieldBonus: 0, fireRateMult: 1 };
 }
-
-interface PerkOption {
-  id: "extra-life" | "shield-boost" | "quick-reload";
-  label: string;
-  description: string;
-  icon: string;
-  apply: (perks: RunPerks) => RunPerks;
-}
-
-const PERK_OPTIONS: PerkOption[] = [
-  {
-    id: "extra-life",
-    label: "Extra Life",
-    description: "+1 max life, right now",
-    icon: "❤️",
-    apply: (p) => ({ ...p, extraLives: p.extraLives + 1 }),
-  },
-  {
-    id: "shield-boost",
-    label: "Shield Boost",
-    description: "+15 shield value every level from here on",
-    icon: "🛡️",
-    apply: (p) => ({ ...p, shieldBonus: p.shieldBonus + 15 }),
-  },
-  {
-    id: "quick-reload",
-    label: "Quick Reload",
-    description: "10% faster firing, every level from here on",
-    icon: "⚡",
-    apply: (p) => ({ ...p, fireRateMult: p.fireRateMult * 0.9 }),
-  },
-];
 
 // ---------------------------------------------------------------------
 // Locations screen geometry: a winding route through space (planet nodes
@@ -735,6 +658,7 @@ function makeInitialState(
     midpointWaveSpawned: false,
     bombsSuppressedUntil: 0,
     bossSpawned: false,
+    bossBlastCooldown: 0,
     eliteSpawned: false,
     downedPlayerId: null,
     reviveDeadline: 0,
@@ -1517,10 +1441,12 @@ export default function FighterGame() {
   // happen. Not React state: nothing needs to re-render off these ticking
   // up, only off an actual new achievement unlocking (see achievementToast).
   const lifetimeStatsRef = useRef<LifetimeStats>(readLifetimeStats());
-  // Player-chosen perks (see PERK_OPTIONS) stack for as long as the current
-  // playthrough lasts -- reset in backToMenu/handleQuit, a fresh run.
+  // Depth-based run perks (see RunPerks/defaultRunPerks) stack for as long
+  // as the current playthrough lasts -- reset in backToMenu/handleQuit, a
+  // fresh run. No longer player-chosen (that "Choose a Perk" screen was
+  // removed -- it interrupted the flow right after "You Survived!" too
+  // abruptly), so this only ever holds the neutral defaults for now.
   const runPerksRef = useRef<RunPerks>(defaultRunPerks());
-  const [pendingPerkChoice, setPendingPerkChoice] = useState(false);
   // Shared ultimate meter -- React state purely for the HUD button (both
   // host and ally read/display this); the actual gameplay-affecting value
   // lives on GameState.ultimateCharge and is only ever mutated by whichever
@@ -1529,19 +1455,19 @@ export default function FighterGame() {
   // fire it on the next frame.
   const [ultimateCharge, setUltimateCharge] = useState(0);
   const ultimateTriggerRef = useRef(false);
-  // Which of the 3 boss firepower loadouts is currently active (see
-  // BOSS_LOADOUTS) -- read by the fire loop while a boss is alive, chosen
-  // (or auto-picked if the player ignores the prompt) each time one spawns.
-  const bossLoadoutRef = useRef<BossLoadoutId>("rapid");
-  const [bossChoiceVisible, setBossChoiceVisible] = useState(false);
-  useEffect(() => {
-    if (!bossChoiceVisible) return;
-    const t = setTimeout(() => setBossChoiceVisible(false), 6000);
-    return () => clearTimeout(t);
-  }, [bossChoiceVisible]);
-  // Whether a boss is currently alive -- drives the HUD "change loadout"
-  // button (see bossChoiceVisible) so the player isn't stuck with whatever
-  // they picked (or the auto-picked default) for the rest of the fight.
+  // One-tap "Boss Blast" special attack (see BOSS_BLAST_COOLDOWN) -- same
+  // trigger-ref relay pattern as the ultimate above (either player's tap
+  // reaches the host, the only client that actually simulates), and
+  // bossBlastReady is purely for the HUD button's enabled/cooldown look
+  // (both host and ally read/display this via the snapshot).
+  const bossBlastTriggerRef = useRef(false);
+  const [bossBlastReady, setBossBlastReady] = useState(false);
+  // Mirrors bossBlastReady so the per-frame cooldown tick in update() can
+  // tell "already told React it's ready" from "just crossed zero" without
+  // calling setState every frame while recharging.
+  const bossBlastReadyRef = useRef(false);
+  // Whether a boss is currently alive -- drives showing the Boss Blast
+  // button at all (it has nothing to do outside a boss fight).
   const [bossFightActive, setBossFightActive] = useState(false);
   const [achievementToast, setAchievementToast] = useState<Achievement | null>(null);
   useEffect(() => {
@@ -1782,7 +1708,8 @@ export default function FighterGame() {
     const runPerks = role === "solo" ? runPerksRef.current : defaultRunPerks();
     stateRef.current = makeInitialState(width, height, level, playerIds, runPerks);
     setBossFightActive(false);
-    setBossChoiceVisible(false);
+    bossBlastReadyRef.current = false;
+    setBossBlastReady(false);
     localPosRef.current = null;
     const spawnedLocal = stateRef.current.players.find((p) => p.id === localIdRef.current);
     if (spawnedLocal) {
@@ -1848,6 +1775,9 @@ export default function FighterGame() {
     });
     channel.bind("client-ultimate", () => {
       ultimateTriggerRef.current = true;
+    });
+    channel.bind("client-bossblast", () => {
+      bossBlastTriggerRef.current = true;
     });
   };
 
@@ -1922,6 +1852,17 @@ export default function FighterGame() {
     }
   };
 
+  // Same relay pattern as fireUltimate above, for the one-tap Boss Blast.
+  const fireBossBlast = () => {
+    if (!bossBlastReady) return;
+    playSelectSound();
+    if (netRoleRef.current === "ally") {
+      channelRef.current?.trigger("client-bossblast", { id: localIdRef.current } satisfies BossBlastMessage);
+    } else {
+      bossBlastTriggerRef.current = true;
+    }
+  };
+
   const handleStart = () => {
     if (authPending) return;
     // Single Player opens the map instead of launching straight in --
@@ -1944,9 +1885,9 @@ export default function FighterGame() {
     statusRef.current = "ready";
     setStatus("ready");
     runPerksRef.current = defaultRunPerks();
-    setPendingPerkChoice(false);
     setBossFightActive(false);
-    setBossChoiceVisible(false);
+    bossBlastReadyRef.current = false;
+    setBossBlastReady(false);
     // Started synchronously here (inside the click handler) rather than left
     // to the status-reactive effect -- some mobile browsers only honor
     // audio.play() when it's tied directly to the gesture's own call stack.
@@ -1959,9 +1900,9 @@ export default function FighterGame() {
     setStatus("quit");
     musicPlayerRef.current?.stop();
     runPerksRef.current = defaultRunPerks();
-    setPendingPerkChoice(false);
     setBossFightActive(false);
-    setBossChoiceVisible(false);
+    bossBlastReadyRef.current = false;
+    setBossBlastReady(false);
   };
 
   // Login/register/session-restore all funnel through here. The account's
@@ -2299,6 +2240,9 @@ export default function FighterGame() {
       s.downedPlayerId = snap.downedPlayerId;
       s.ultimateCharge = snap.ultimateCharge;
       setUltimateCharge(snap.ultimateCharge);
+      bossBlastReadyRef.current = snap.bossBlastReady;
+      setBossBlastReady(snap.bossBlastReady);
+      setBossFightActive(snap.enemies.some((en) => en.isBoss));
       const wantLocation = locationIndexForLevel(snap.level);
       if (s.locationTheme.index !== wantLocation) {
         s.locationTheme = getLocationTheme(wantLocation, s.width, s.height);
@@ -2396,6 +2340,7 @@ export default function FighterGame() {
         shieldTotal: shieldTotalRef.current,
         downedPlayerId: s.downedPlayerId,
         ultimateCharge: s.ultimateCharge,
+        bossBlastReady: s.bossBlastCooldown <= 0,
         players: s.players.map((pl, i) => ({
           id: pl.id,
           x: round1(pl.x),
@@ -2514,13 +2459,12 @@ export default function FighterGame() {
       // auto-fire, one volley per player — faster while a Rapid Fire buff
       // is active.
       const bossActive = s.enemies.some((e) => e.isBoss);
-      const bossLoadout = BOSS_LOADOUTS[bossLoadoutRef.current];
       for (const pl of s.players) {
         if (pl.id === s.downedPlayerId) continue;
         pl.fireTimer -= dt;
         if (pl.fireTimer <= 0) {
           const rapid = bossActive || s.elapsed < pl.rapidFireUntil;
-          pl.fireTimer = bossActive ? bossLoadout.fireInterval : rapid ? RAPIDFIRE_INTERVAL : s.baseFireInterval;
+          pl.fireTimer = bossActive ? BOSS_FIRE_INTERVAL : rapid ? RAPIDFIRE_INTERVAL : s.baseFireInterval;
           s.bullets.push({ x: pl.x - 7, y: pl.y - 14, vy: -560, ownerId: pl.id, rapid });
           s.bullets.push({ x: pl.x + 7, y: pl.y - 14, vy: -560, ownerId: pl.id, rapid });
         }
@@ -2530,7 +2474,7 @@ export default function FighterGame() {
         if (bossActive) {
           pl.missileTimer -= dt;
           if (pl.missileTimer <= 0) {
-            pl.missileTimer = bossLoadout.missileInterval;
+            pl.missileTimer = BOSS_MISSILE_INTERVAL;
             s.bullets.push({ x: pl.x, y: pl.y - 16, vy: -420, ownerId: pl.id, rapid: true, heavy: true });
           }
         } else {
@@ -2539,6 +2483,17 @@ export default function FighterGame() {
       }
       for (const b of s.bullets) b.y += b.vy * dt;
       s.bullets = s.bullets.filter((b) => b.y > -20);
+
+      // Boss Blast cooldown tick -- only relevant while a boss is up, so it
+      // just sits at 0 (ready) the rest of the time. Only calls setState on
+      // the actual ready-flip, not every recharging frame.
+      if (bossActive && s.bossBlastCooldown > 0) {
+        s.bossBlastCooldown = Math.max(0, s.bossBlastCooldown - dt);
+        if (s.bossBlastCooldown === 0 && !bossBlastReadyRef.current) {
+          bossBlastReadyRef.current = true;
+          setBossBlastReady(true);
+        }
+      }
 
       // Difficulty is driven by the level being played, stepped up +4% for
       // every full minute survived, and oscillates between a bomb-heavy
@@ -2702,14 +2657,13 @@ export default function FighterGame() {
           hp: maxHp,
           maxHp,
         });
-        // Reset to the default loadout and let the player pick a firepower
-        // option for this fight -- if they ignore the prompt it auto-hides
-        // (see the bossChoiceVisible effect) and "rapid" just keeps firing.
-        bossLoadoutRef.current = "rapid";
-        setBossChoiceVisible(true);
+        // Boss Blast starts pre-charged -- usable the instant the fight
+        // starts, then back on cooldown after each use (see BOSS_BLAST_COOLDOWN).
+        s.bossBlastCooldown = 0;
+        bossBlastReadyRef.current = true;
+        setBossBlastReady(true);
         setBossFightActive(true);
         playBossRoarSound();
-        playPageFlipSound();
       }
 
       for (const en of s.enemies) {
@@ -2895,8 +2849,7 @@ export default function FighterGame() {
             deadBullets.add(b);
             const idx = s.players.findIndex((p) => p.id === b.ownerId);
             if (en.hp !== undefined) {
-              const loadout = BOSS_LOADOUTS[bossLoadoutRef.current];
-              const damage = b.heavy ? loadout.missileDamage : en.isBoss ? loadout.bulletDamage : 1;
+              const damage = b.heavy ? BOSS_MISSILE_DAMAGE : 1;
               en.hp -= damage;
               spawnExplosion(s.particles, b.x, b.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], b.heavy ? 12 : 4);
               if (idx >= 0) {
@@ -2919,7 +2872,8 @@ export default function FighterGame() {
                   triggerShake(s, 26, 0.9);
                   if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 100;
                   setBossFightActive(false);
-                  setBossChoiceVisible(false);
+                  bossBlastReadyRef.current = false;
+                  setBossBlastReady(false);
                   s.levelDuration = Math.min(s.levelDuration, s.elapsed + BOSS_EARLY_KILL_VICTORY_LAP);
                 }
               }
@@ -3053,7 +3007,8 @@ export default function FighterGame() {
                   lifetimeStatsRef.current.kills += 1;
                   lifetimeStatsRef.current.bossKills += 1;
                   setBossFightActive(false);
-                  setBossChoiceVisible(false);
+                  bossBlastReadyRef.current = false;
+                  setBossBlastReady(false);
                   s.levelDuration = Math.min(s.levelDuration, s.elapsed + BOSS_EARLY_KILL_VICTORY_LAP);
                 }
               }
@@ -3097,6 +3052,12 @@ export default function FighterGame() {
               s.enemies = [];
               spawnExplosion(s.particles, boss.x, boss.y, ["#c4b5fd", "#a78bfa", "#ffffff"], 40);
               scoresRef.current[0] = (scoresRef.current[0] ?? 0) + 100;
+              lifetimeStatsRef.current.kills += 1;
+              lifetimeStatsRef.current.bossKills += 1;
+              setBossFightActive(false);
+              bossBlastReadyRef.current = false;
+              setBossBlastReady(false);
+              s.levelDuration = Math.min(s.levelDuration, s.elapsed + BOSS_EARLY_KILL_VICTORY_LAP);
             }
           }
           for (const pl of s.players) {
@@ -3107,6 +3068,46 @@ export default function FighterGame() {
           setScore(scoreRef.current);
           triggerShake(s, 14, 0.6);
           playEnemyHitSound();
+          recordLifetimeStats();
+        }
+      }
+
+      // Boss Blast: consumed here regardless of which client's button set
+      // it (this client's own tap, or the ally's relayed one) -- only
+      // actually fires if a boss exists and is off cooldown, so a stray/
+      // late trigger is a harmless no-op.
+      if (bossBlastTriggerRef.current) {
+        bossBlastTriggerRef.current = false;
+        const boss = s.enemies.find((en) => en.isBoss);
+        if (boss && s.bossBlastCooldown <= 0) {
+          const damage = Math.max(20, Math.round((boss.maxHp ?? 20) * BOSS_BLAST_DAMAGE_FRACTION));
+          boss.hp = (boss.hp ?? 1) - damage;
+          spawnExplosion(s.particles, boss.x, boss.y, ["#8fd3ff", "#ffffff", "#ff7a3c"], 44, 1.8);
+          scoresRef.current[0] = (scoresRef.current[0] ?? 0) + damage * 2;
+          triggerShake(s, 16, 0.6);
+          playSmartBombPickupSound();
+          s.bossBlastCooldown = BOSS_BLAST_COOLDOWN;
+          bossBlastReadyRef.current = false;
+          setBossBlastReady(false);
+          if (boss.hp <= 0) {
+            s.enemies = [];
+            spawnExplosion(s.particles, boss.x, boss.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], 70, 2.4);
+            for (let i = 0; i < 5; i++) {
+              const ox = (Math.random() - 0.5) * ENEMY_RADIUS * boss.scale * 2.4;
+              const oy = (Math.random() - 0.5) * ENEMY_RADIUS * boss.scale * 2.4;
+              spawnExplosion(s.particles, boss.x + ox, boss.y + oy, ["#ffcf5c", "#ff7a3c", "#ff3b3b", "#8a8f96"], 26, 1.8);
+            }
+            triggerShake(s, 26, 0.9);
+            scoresRef.current[0] = (scoresRef.current[0] ?? 0) + 100;
+            lifetimeStatsRef.current.kills += 1;
+            lifetimeStatsRef.current.bossKills += 1;
+            setBossFightActive(false);
+            s.levelDuration = Math.min(s.levelDuration, s.elapsed + BOSS_EARLY_KILL_VICTORY_LAP);
+          }
+          setScores([...scoresRef.current]);
+          scoreRef.current = scoresRef.current.reduce((sum, v) => sum + (v ?? 0), 0);
+          setScore(scoreRef.current);
+          recordLifetimeStats();
         }
       }
 
@@ -3212,7 +3213,6 @@ export default function FighterGame() {
         const crossedLocation = locationIndexForLevel(nextLevel) > locationIndexForLevel(s.level);
         setJustUnlockedLocation(crossedLocation ? getLocationName(locationIndexForLevel(nextLevel)) : null);
         setSoloStartLevel(nextLevel);
-        if (netRoleRef.current === "solo") setPendingPerkChoice(true);
         setUnlockedLevel((u) => {
           if (nextLevel <= u) return u;
           try {
@@ -3769,19 +3769,6 @@ export default function FighterGame() {
               💬
             </button>
           )}
-          {bossFightActive && !isAlly && status === "playing" && (
-            <button
-              onClick={() => {
-                setBossChoiceVisible(true);
-                playPageFlipSound();
-              }}
-              aria-label="Open firepower loadout chest"
-              className="pointer-events-auto flex flex-col items-center gap-0 rounded-lg border border-amber-300/60 bg-amber-500/25 px-2 py-1 leading-none shadow-[0_0_10px_2px_rgba(245,158,11,0.55)] backdrop-blur-sm active:scale-95 transition-transform animate-pulse"
-            >
-              <span className="text-xl leading-none">📦</span>
-              <span className="text-[7px] font-bold uppercase tracking-wide text-amber-200">Loadout</span>
-            </button>
-          )}
           {status === "playing" && (
             <button
               onClick={fireUltimate}
@@ -3811,42 +3798,21 @@ export default function FighterGame() {
         </div>
       </div>
 
-      {bossChoiceVisible && status === "playing" && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-6 z-50 flex justify-center px-4 font-sans">
-          <div className="pointer-events-auto flex flex-col items-center gap-2 rounded-xl border border-red-400/40 bg-black/85 px-4 py-3 shadow-lg shadow-black/40">
-            <div className="text-xs font-bold uppercase tracking-wide text-red-300/90">
-              Boss Firepower — Choose One
-            </div>
-            <div className="flex flex-wrap justify-center gap-2">
-              {(Object.keys(BOSS_LOADOUTS) as BossLoadoutId[]).map((id) => {
-                const opt = BOSS_LOADOUTS[id];
-                return (
-                  <button
-                    key={id}
-                    onClick={() => {
-                      bossLoadoutRef.current = id;
-                      setBossChoiceVisible(false);
-                      playSelectSound();
-                      // A brief invulnerability window so glancing at the
-                      // menu to pick/switch a loadout mid-fight isn't itself
-                      // a liability -- covers the whole team, not just
-                      // whoever tapped, since the choice affects the fight
-                      // for everyone.
-                      const s = stateRef.current;
-                      if (s) {
-                        for (const pl of s.players) pl.invuln = Math.max(pl.invuln, 1);
-                      }
-                    }}
-                    className="flex w-24 flex-col items-center gap-1 rounded-lg border border-white/15 bg-white/5 px-2 py-2.5 text-center active:scale-95 transition-transform hover:bg-white/10"
-                  >
-                    <span className="text-2xl leading-none">{opt.icon}</span>
-                    <div className="text-sm font-bold leading-tight text-white">{opt.label}</div>
-                    <div className="text-xs leading-tight text-white/70">{opt.description}</div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+      {bossFightActive && status === "playing" && (
+        <div className="pointer-events-none absolute bottom-6 right-4 z-40 font-sans">
+          <button
+            onClick={fireBossBlast}
+            disabled={!bossBlastReady}
+            aria-label={bossBlastReady ? "Boss Blast -- fire!" : "Boss Blast recharging"}
+            className={`pointer-events-auto flex h-16 w-16 flex-col items-center justify-center gap-0.5 rounded-full border-2 text-center transition-transform active:scale-95 ${
+              bossBlastReady
+                ? "border-red-300 bg-red-600/90 shadow-[0_0_18px_4px_rgba(239,68,68,0.75)] animate-pulse"
+                : "border-white/20 bg-black/40 opacity-60"
+            }`}
+          >
+            <span className="text-2xl leading-none">💥</span>
+            <span className="text-[9px] font-extrabold uppercase tracking-wide text-white">Blast</span>
+          </button>
         </div>
       )}
 
@@ -4391,33 +4357,6 @@ export default function FighterGame() {
               Logout
             </button>
           )}
-        </div>
-      )}
-
-      {pendingPerkChoice && status === "levelcomplete" && isProgressiveRun && (
-        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-black/90 px-6 text-center text-white font-sans">
-          <h2 className="text-2xl font-extrabold">Choose a Perk</h2>
-          <p className="max-w-xs text-sm text-white/70">
-            Stacks for the rest of this run.
-          </p>
-          <div className="flex w-full max-w-xs flex-col gap-2.5">
-            {PERK_OPTIONS.map((opt) => (
-              <button
-                key={opt.id}
-                onClick={() => {
-                  runPerksRef.current = opt.apply(runPerksRef.current);
-                  setPendingPerkChoice(false);
-                }}
-                className="flex items-center gap-3 rounded-xl border border-white/15 bg-white/5 px-4 py-3 text-left active:scale-95 transition-transform hover:bg-white/10"
-              >
-                <span className="text-2xl leading-none">{opt.icon}</span>
-                <div>
-                  <div className="text-sm font-bold">{opt.label}</div>
-                  <div className="text-xs text-white/60">{opt.description}</div>
-                </div>
-              </button>
-            ))}
-          </div>
         </div>
       )}
 
