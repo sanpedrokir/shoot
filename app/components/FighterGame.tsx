@@ -3260,12 +3260,15 @@ export default function FighterGame() {
           {lobbyMode === "host" && (
             <div className="flex flex-col items-center gap-1.5 rounded-xl bg-white/10 px-4 py-3">
               {connStatus === "idle" && (
-                <button
-                  onClick={hostRoom}
-                  className="rounded-full bg-white/20 px-5 py-2 text-sm font-semibold"
-                >
-                  Invite Ally
-                </button>
+                <div className="relative">
+                  <span className="pointer-events-none absolute -inset-2 rounded-full bg-amber-400/30 blur-lg" />
+                  <button
+                    onClick={hostRoom}
+                    className="relative rounded-full border-2 border-amber-300/80 bg-gradient-to-b from-amber-300 via-amber-500 to-amber-700 px-8 py-2.5 text-base font-extrabold tracking-wide text-amber-950 shadow-[inset_0_2px_0_rgba(255,255,255,0.5),inset_0_-5px_8px_rgba(120,53,15,0.35),0_3px_0_0_rgba(120,53,15,0.9),0_8px_18px_-4px_rgba(245,158,11,0.6)] transition-all active:translate-y-0.5 active:shadow-[0_1px_0_0_rgba(120,53,15,0.9)]"
+                  >
+                    🤝 Invite Ally
+                  </button>
+                </div>
               )}
               {connStatus === "connecting" && <p className="text-sm">Setting Up…</p>}
               {connStatus === "connected" && (
