@@ -11,6 +11,7 @@ import {
   type InputMessage,
   type StartMessage,
   type NetSnapshot,
+  type ChatMessage,
 } from "../lib/coop";
 import { createMusicPlayer, type MusicPlayer } from "../lib/musicPlayer";
 import AuthPanel, { type AuthUser, type LeaderboardTop } from "./AuthPanel";
@@ -153,6 +154,12 @@ const COOP_MUSIC_TRACK = "/audio/theme-coop.mp3";
 // Soft jazz piano plays while browsing the Locations screen — a strategy-map
 // moment rather than gameplay, so it gets its own calmer track.
 const LOCATIONS_MUSIC_TRACK = "/audio/theme-locations.mp3";
+// Plays on the landing/menu screen itself, before any mode is started.
+const MENU_MUSIC_TRACK = "/audio/theme-menu.mp3";
+// One-tap co-op call-outs — the whole point is speed (typing while dodging
+// isn't practical), so these cover it without ever needing the keyboard.
+const CHAT_PRESETS = ["Watch out!", "Nice shot!", "Need help!", "Behind you!", "GG!"];
+const CHAT_BUBBLE_DURATION = 3000;
 // Everyone gets the same starting difficulty for the daily challenge — a
 // bit more bite than the level-1 default, since it's meant to be a real
 // challenge to compete over, not just another normal run.
@@ -1201,6 +1208,10 @@ export default function FighterGame() {
   // localTargetRef is what pointer/keyboard input is steering toward.
   const localTargetRef = useRef({ x: 0, y: 0 });
   const localPosRef = useRef<{ x: number; y: number } | null>(null);
+  // Latest chat message per player id, keyed by id so only the most recent
+  // one shows (a speech bubble over that player's plane, not a running
+  // log) — expires on its own via `until`, no explicit cleanup needed.
+  const chatBubblesRef = useRef<Map<string, { text: string; until: number }>>(new Map());
 
   const [status, setStatus] = useState<Status>("ready");
   const [score, setScore] = useState(0);
@@ -1250,6 +1261,9 @@ export default function FighterGame() {
   // and blinks this node instead of the frontier.
   const [highlightLocation, setHighlightLocation] = useState<number | null>(null);
   const locationsScrollRef = useRef<HTMLDivElement | null>(null);
+
+  const [showChat, setShowChat] = useState(false);
+  const [chatInput, setChatInput] = useState("");
 
   const [lobbyMode, setLobbyMode] = useState<LobbyMode>("solo");
   const [netRole, setNetRole] = useState<NetRole>("solo");
@@ -1316,10 +1330,29 @@ export default function FighterGame() {
   useEffect(() => {
     if (showLocations) {
       musicPlayerRef.current?.start(LOCATIONS_MUSIC_TRACK);
-    } else if (statusRef.current === "ready") {
-      musicPlayerRef.current?.stop();
+    } else if (status === "ready") {
+      musicPlayerRef.current?.start(MENU_MUSIC_TRACK);
     }
-  }, [showLocations]);
+  }, [showLocations, status]);
+
+  // Autoplay is blocked until the page has seen a real user gesture, so the
+  // menu track (which should start playing before anyone has clicked
+  // anything) can't rely on the effect above alone. This fires once on the
+  // very first pointer/key interaction anywhere and (re)starts whatever
+  // ambient track should currently be playing.
+  useEffect(() => {
+    const tryResumeMenuMusic = () => {
+      if (statusRef.current === "ready") {
+        musicPlayerRef.current?.start(MENU_MUSIC_TRACK);
+      }
+    };
+    window.addEventListener("pointerdown", tryResumeMenuMusic, { once: true, capture: true });
+    window.addEventListener("keydown", tryResumeMenuMusic, { once: true, capture: true });
+    return () => {
+      window.removeEventListener("pointerdown", tryResumeMenuMusic, { capture: true });
+      window.removeEventListener("keydown", tryResumeMenuMusic, { capture: true });
+    };
+  }, []);
 
   useEffect(() => {
     // Reads localStorage after hydration (not in the initial state) so the
@@ -1437,6 +1470,9 @@ export default function FighterGame() {
     channel.bind("client-input", (data: InputMessage) => {
       pendingInputsRef.current.set(data.id, { x: data.x, y: data.y });
     });
+    channel.bind("client-chat", (data: ChatMessage) => {
+      chatBubblesRef.current.set(data.id, { text: data.text, until: performance.now() + CHAT_BUBBLE_DURATION });
+    });
   };
 
   const hostStartOrRestart = () => {
@@ -1471,6 +1507,9 @@ export default function FighterGame() {
     channel.bind("client-state", (data: NetSnapshot) => {
       latestSnapshotRef.current = data;
     });
+    channel.bind("client-chat", (data: ChatMessage) => {
+      chatBubblesRef.current.set(data.id, { text: data.text, until: performance.now() + CHAT_BUBBLE_DURATION });
+    });
     channel.bind("pusher:member_removed", (member: { id: string }) => {
       if (netRoleRef.current === "ally" && member.id === playerIdsRef.current[0]) {
         setHostLeft(true);
@@ -1479,6 +1518,20 @@ export default function FighterGame() {
         musicPlayerRef.current?.stop();
       }
     });
+  };
+
+  // Shows immediately on the sender's own screen (Pusher client events don't
+  // echo back to the sender) and closes the picker right away -- one tap is
+  // the entire interaction, nothing lingers waiting to be dismissed.
+  const sendChat = (text: string) => {
+    const trimmed = text.trim().slice(0, 40);
+    if (!trimmed || !channelRef.current) return;
+    channelRef.current.trigger("client-chat", { id: localIdRef.current, text: trimmed } satisfies ChatMessage);
+    // Only ever runs from a click handler, never during render.
+    // eslint-disable-next-line react-hooks/purity
+    chatBubblesRef.current.set(localIdRef.current, { text: trimmed, until: performance.now() + CHAT_BUBBLE_DURATION });
+    setChatInput("");
+    setShowChat(false);
   };
 
   const handleStart = () => {
@@ -2597,6 +2650,49 @@ export default function FighterGame() {
         });
       }
 
+      // chat bubbles — one per player, drawn above their plane, self-expiring
+      // (deleted the moment they're stale rather than tracked elsewhere).
+      if (chatBubblesRef.current.size > 0) {
+        const now = performance.now();
+        for (const pl of s.players) {
+          const bubble = chatBubblesRef.current.get(pl.id);
+          if (!bubble) continue;
+          if (bubble.until <= now) {
+            chatBubblesRef.current.delete(pl.id);
+            continue;
+          }
+          const fadeIn = clamp((CHAT_BUBBLE_DURATION - (bubble.until - now)) / 150, 0, 1);
+          const fadeOut = clamp((bubble.until - now) / 300, 0, 1);
+          c.save();
+          c.globalAlpha = Math.min(fadeIn, fadeOut);
+          c.font = "600 12px sans-serif";
+          const textWidth = c.measureText(bubble.text).width;
+          const padX = 8;
+          const bw = textWidth + padX * 2;
+          const bh = 22;
+          const bx = clamp(pl.x - bw / 2, 4, s.width - bw - 4);
+          const by = pl.y - PLAYER_RADIUS - bh - 12;
+          c.fillStyle = "rgba(10,12,24,0.85)";
+          c.strokeStyle = "rgba(255,255,255,0.35)";
+          c.lineWidth = 1;
+          const r = 8;
+          c.beginPath();
+          c.moveTo(bx + r, by);
+          c.arcTo(bx + bw, by, bx + bw, by + bh, r);
+          c.arcTo(bx + bw, by + bh, bx, by + bh, r);
+          c.arcTo(bx, by + bh, bx, by, r);
+          c.arcTo(bx, by, bx + bw, by, r);
+          c.closePath();
+          c.fill();
+          c.stroke();
+          c.fillStyle = "#fff";
+          c.textAlign = "center";
+          c.textBaseline = "middle";
+          c.fillText(bubble.text, bx + bw / 2, by + bh / 2 + 1);
+          c.restore();
+        }
+      }
+
       // particles
       for (const pt of s.particles) {
         const t = pt.life / pt.maxLife;
@@ -2610,6 +2706,8 @@ export default function FighterGame() {
       }
     }
 
+    // Runs once inside this mount effect to seed the game clock, never during render.
+    // eslint-disable-next-line react-hooks/purity
     lastTimeRef.current = performance.now();
     rafRef.current = requestAnimationFrame(loop);
 
@@ -2746,6 +2844,15 @@ export default function FighterGame() {
               🗺️
             </button>
           )}
+          {netRole !== "solo" && status === "playing" && (
+            <button
+              onClick={() => setShowChat((v) => !v)}
+              aria-label={showChat ? "Close chat" : "Open chat"}
+              className="pointer-events-auto rounded-lg bg-black/35 px-2.5 py-1.5 text-lg leading-none backdrop-blur-sm active:scale-95 transition-transform"
+            >
+              💬
+            </button>
+          )}
           <button
             onClick={() => setMusicMuted((m) => !m)}
             aria-label={musicMuted ? "Unmute music" : "Mute music"}
@@ -2755,6 +2862,50 @@ export default function FighterGame() {
           </button>
         </div>
       </div>
+
+      {showChat && netRole !== "solo" && status === "playing" && (
+        <div className="absolute right-3 top-16 z-40 w-64 rounded-xl bg-black/85 p-3 text-white backdrop-blur-sm font-sans sm:right-4">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-white/50">Quick Chat</span>
+            <button
+              onClick={() => setShowChat(false)}
+              aria-label="Close chat"
+              className="rounded-full bg-white/10 px-2 py-0.5 text-xs font-bold active:scale-95 transition-transform"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {CHAT_PRESETS.map((msg) => (
+              <button
+                key={msg}
+                onClick={() => sendChat(msg)}
+                className="rounded-full bg-white/10 px-3 py-1.5 text-xs font-semibold active:scale-95 transition-transform"
+              >
+                {msg}
+              </button>
+            ))}
+          </div>
+          <div className="mt-2 flex gap-1.5">
+            <input
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") sendChat(chatInput);
+              }}
+              maxLength={40}
+              placeholder="Type…"
+              className="min-w-0 flex-1 rounded-lg bg-white/90 px-2.5 py-1.5 text-xs text-black"
+            />
+            <button
+              onClick={() => sendChat(chatInput)}
+              className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-bold active:scale-95 transition-transform"
+            >
+              Send
+            </button>
+          </div>
+        </div>
+      )}
 
       {showLocations && (
         <div className="absolute inset-0 z-20 flex flex-col bg-[#05060c] text-white font-sans">

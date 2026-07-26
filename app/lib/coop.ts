@@ -58,6 +58,11 @@ export interface InputMessage {
   y: number;
 }
 
+export interface ChatMessage {
+  id: string;
+  text: string;
+}
+
 export interface StartMessage {
   level: number;
   playerIds: string[];
