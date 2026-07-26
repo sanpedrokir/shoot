@@ -24,7 +24,10 @@ import {
 } from "../lib/sfx";
 import AuthPanel, { type AuthUser, type AuthPanelHandle, type LeaderboardTop } from "./AuthPanel";
 
-type Bullet = { x: number; y: number; vy: number; ownerId: string; rapid: boolean };
+// heavy is set only for the player-fired "missile" bolts that appear while
+// the boss is alive — bigger, slower-firing, and much higher damage against
+// it than a regular bullet.
+type Bullet = { x: number; y: number; vy: number; ownerId: string; rapid: boolean; heavy?: boolean };
 type Missile = { x: number; y: number; vy: number; vx: number };
 type Bomb = { x: number; y: number; vy: number; rot: number };
 type Shield = { x: number; y: number; vy: number; phase: number };
@@ -74,6 +77,9 @@ type Player = {
   targetY: number;
   invuln: number;
   fireTimer: number;
+  // Separate, much slower cadence for the heavy "missile" bolt fired
+  // automatically alongside regular bullets while a boss is alive.
+  missileTimer: number;
   // Elapsed-time threshold (host-simulation-only, not networked — see the
   // note by RAPIDFIRE_DURATION) until which this plane fires faster.
   rapidFireUntil: number;
@@ -149,6 +155,11 @@ const RAPIDFIRE_INTERVAL = 0.06;
 // is alive -- it needs to feel genuinely killable within its ~10 second
 // window, not just "a bit more fire" on top of a boss with a lot of hp.
 const BOSS_FIRE_INTERVAL = 0.045;
+// The heavy "missile" bolt each player also fires while a boss is alive —
+// much slower than either fire rate above, but each one takes a big chunk
+// out of the boss's hp (see MISSILE_BOLT_DAMAGE at the collision pass).
+const MISSILE_BOLT_INTERVAL = 0.5;
+const MISSILE_BOLT_DAMAGE = 8;
 const RAPIDFIRE_DURATION = 8;
 
 const SMARTBOMB_HIT_RADIUS = 18;
@@ -477,7 +488,17 @@ function makePlayers(
   return playerIds.map((id, i) => {
     const x = width / 2 + (i - (n - 1) / 2) * 56;
     const y = height - height * 0.16;
-    return { id, x, y, targetX: x, targetY: y, invuln: 2, fireTimer: 0, rapidFireUntil: startingRapidFireBonus };
+    return {
+      id,
+      x,
+      y,
+      targetX: x,
+      targetY: y,
+      invuln: 2,
+      fireTimer: 0,
+      missileTimer: 0,
+      rapidFireUntil: startingRapidFireBonus,
+    };
   });
 }
 
@@ -1938,6 +1959,7 @@ export default function FighterGame() {
           targetY,
           invuln: np.invuln,
           fireTimer: 0,
+          missileTimer: 0,
           // Host-simulation-only detail for bullet-spawn timing, already
           // reflected visually in the bullets the ally receives (rapid flag).
           // The snapshot's own rapidFireUntil is read directly off `snap`
@@ -1981,6 +2003,7 @@ export default function FighterGame() {
         vy: nb.vy,
         ownerId: "",
         rapid: nb.rapid,
+        heavy: nb.heavy,
       }));
       s.shields = snap.shields.map((ns) => ({ x: ns.x * scaleX, y: ns.y * scaleY, vy: ns.vy, phase: 0 }));
       s.rapidFires = snap.rapidFires.map((nr) => ({ x: nr.x * scaleX, y: nr.y * scaleY, vy: nr.vy, phase: 0 }));
@@ -2057,7 +2080,7 @@ export default function FighterGame() {
           .map((b) => ({ x: round1(b.x), y: round1(b.y), vy: round1(b.vy), rot: round1(b.rot) })),
         bullets: s.bullets
           .slice(0, MAX_SNAPSHOT_ENTITIES)
-          .map((b) => ({ x: round1(b.x), y: round1(b.y), vy: round1(b.vy), rapid: b.rapid })),
+          .map((b) => ({ x: round1(b.x), y: round1(b.y), vy: round1(b.vy), rapid: b.rapid, heavy: b.heavy })),
         shields: s.shields
           .slice(0, MAX_SNAPSHOT_ENTITIES)
           .map((sh) => ({ x: round1(sh.x), y: round1(sh.y), vy: round1(sh.vy) })),
@@ -2113,6 +2136,18 @@ export default function FighterGame() {
           s.bullets.push({ x: pl.x - 7, y: pl.y - 14, vy: -560, ownerId: pl.id, rapid });
           s.bullets.push({ x: pl.x + 7, y: pl.y - 14, vy: -560, ownerId: pl.id, rapid });
         }
+        // A much heavier "missile" bolt on its own slower timer, only while
+        // a boss is around -- this is the extra firepower on top of the
+        // already-faster regular bullets above, not a replacement for them.
+        if (bossActive) {
+          pl.missileTimer -= dt;
+          if (pl.missileTimer <= 0) {
+            pl.missileTimer = MISSILE_BOLT_INTERVAL;
+            s.bullets.push({ x: pl.x, y: pl.y - 16, vy: -420, ownerId: pl.id, rapid: true, heavy: true });
+          }
+        } else {
+          pl.missileTimer = 0;
+        }
       }
       for (const b of s.bullets) b.y += b.vy * dt;
       s.bullets = s.bullets.filter((b) => b.y > -20);
@@ -2126,22 +2161,15 @@ export default function FighterGame() {
       // bursts arrive both bigger and more often, scaled off how many extra
       // teammates are in the fight.
       const extraPlayers = s.players.length - 1;
-      // Last stretch of the clock: falling bursts keep arriving (rather than
-      // stopping once the finale cluster lands) and come in bigger, faster,
-      // and more often, so the closing seconds read as the hardest part of
-      // the level instead of the finale cluster being the last word.
       const timeLeft = s.levelDuration - s.elapsed;
-      const finalePush = timeLeft <= 8;
       s.spawnTimer -= dt;
-      // Once the finale lineup has landed, the regular random bursts stop
-      // (except during the finalePush window above) — it should read as a
-      // clean shooting gallery, not get cluttered by more planes falling in
-      // around it.
-      if (s.spawnTimer <= 0 && (!s.bossSpawned || finalePush)) {
+      // Once the boss has landed, regular random bursts stop entirely — it's
+      // a clean one-on-one shooting gallery from then on, not more planes
+      // falling in around it.
+      if (s.spawnTimer <= 0 && !s.bossSpawned) {
         s.spawnTimer =
           (clamp(1.6 - difficulty * 0.5 - swarmFocus * 0.3, 0.45, 1.6) + Math.random() * 0.3) /
-          (1 + extraPlayers * 0.35) /
-          (finalePush ? 2.4 : 1);
+          (1 + extraPlayers * 0.35);
         // Every burst is at least a pair so the wedge formation always reads
         // as a squadron arriving together — plus up to five extra enemies
         // per teammate beyond the first, scaled by the *shaped* swarm focus
@@ -2150,12 +2178,11 @@ export default function FighterGame() {
         // plane-heavy and bomb-heavy (see the bomb-timer bonus above)
         // stretches instead of constant elevated pressure. Also a
         // level-scaled bonus so deep runs get visibly bigger squadrons and
-        // not just a spawn timer that's already hit its floor, plus a final
-        // couple more once the last 8 seconds kick in.
+        // not just a spawn timer that's already hit its floor.
         const extraSwarm = Math.min(1, Math.floor(swarmFocus * 2.2));
         const difficultySwarm = Math.floor(difficulty / 2.5);
         const coopPlaneBonus = Math.round(extraPlayers * coopBonusIntensity(swarmFocus) * 5);
-        const desiredCount = 2 + coopPlaneBonus + extraSwarm + difficultySwarm + (finalePush ? 2 : 0);
+        const desiredCount = 2 + coopPlaneBonus + extraSwarm + difficultySwarm;
         // Hard-capped against MAX_LIVE_ENEMIES so an extremely deep/long run
         // (the difficulty curve climbs forever) can never grow the live
         // enemy count -- and so the O(bullets x enemies) collision pass --
@@ -2172,7 +2199,7 @@ export default function FighterGame() {
             s.enemies.push({
               x: clamp(anchorX + offsets[i].dx, 30, s.width - 30),
               y: -30 + offsets[i].dy,
-              vy: 55 + Math.random() * 35 + Math.min(difficulty, 14) * 40 + (finalePush ? 90 : 0),
+              vy: 55 + Math.random() * 35 + Math.min(difficulty, 14) * 40,
               phase: Math.random() * Math.PI * 2,
               amp: 20 + Math.random() * 40,
               scale: 0.85 + Math.random() * 0.35,
@@ -2216,30 +2243,29 @@ export default function FighterGame() {
         s.bombsSuppressedUntil = s.elapsed + 10;
       }
 
-      // Boss: with 10 seconds left on the clock, a single massive "monster"
-      // plane drops in and hovers — a slow drifting loop, not a spin — near
-      // the top of the screen instead of falling through. It takes many
-      // hits instead of one (bullet damage decrements hp in the collision
-      // pass below) and fires far more aggressively than a regular enemy,
-      // and stays until the player brings it down or time runs out (no
-      // respawn if it's destroyed early — that's the reward for doing it).
-      // Every player gets a temporary firepower boost the moment it
-      // arrives, reusing the same rapidFireUntil buff a Rapid Fire pickup
-      // grants, so a solo player has an actual fighting chance against it.
+      // Boss: with 10 seconds left on the clock, every regular enemy is
+      // cleared out and a single massive "monster" plane takes their place —
+      // fixed in one spot (no drift/orbit at all), so it's a clean, focused
+      // shooting gallery rather than something that has to be chased or that
+      // gets lost in a crowd of other planes. It takes many hits instead of
+      // one (bullet damage decrements hp in the collision pass below), fires
+      // far more aggressively than a regular enemy, and stays until the
+      // player brings it down or time runs out (no respawn if it's
+      // destroyed early — that's the reward for doing it). Every player
+      // gets a firepower boost the moment it arrives (see bossActive above)
+      // so it's a real fight, not a stalemate.
       if (!s.bossSpawned && timeLeft <= 10) {
         s.bossSpawned = true;
-        // Tuned so sustained, reasonably accurate fire during the boost
-        // below (BOSS_FIRE_INTERVAL, 2 bullets/volley) clears it well within
-        // the ~10 second window -- this is meant to be a tense but
-        // genuinely winnable fight, not a damage-sponge stalemate.
-        const maxHp = 18 + extraPlayers * 10 + Math.floor(difficulty * 1.5);
-        const cx = s.width / 2;
-        const cy = s.height * 0.22;
+        s.enemies = [];
+        // Tuned for the boosted fire rate + heavy missile bonus above to
+        // bring it down over several seconds of sustained, accurate fire —
+        // a tense duel, not an instant kill or a stalemate.
+        const maxHp = 70 + extraPlayers * 30 + Math.floor(difficulty * 3);
         s.enemies.push({
-          x: cx,
-          y: cy,
+          x: s.width / 2,
+          y: s.height * 0.24,
           vy: 0,
-          phase: Math.random() * Math.PI * 2,
+          phase: 0,
           amp: 0,
           scale: 3.2,
           fireTimer: 1,
@@ -2247,13 +2273,7 @@ export default function FighterGame() {
           isBoss: true,
           hp: maxHp,
           maxHp,
-          // Tighter drift than the old cluster's — easier to stay under it
-          // and keep landing hits instead of chasing it side to side.
-          orbit: { cx, cy, radius: 16, angle: Math.random() * Math.PI * 2, speed: 0.35 },
         });
-        for (const pl of s.players) {
-          pl.rapidFireUntil = Math.max(pl.rapidFireUntil, s.elapsed) + timeLeft + 3;
-        }
       }
 
       for (const en of s.enemies) {
@@ -2420,10 +2440,11 @@ export default function FighterGame() {
             deadBullets.add(b);
             const idx = s.players.findIndex((p) => p.id === b.ownerId);
             if (en.isBoss) {
-              en.hp = (en.hp ?? 1) - 1;
-              spawnExplosion(s.particles, b.x, b.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], 4);
+              const damage = b.heavy ? MISSILE_BOLT_DAMAGE : 1;
+              en.hp = (en.hp ?? 1) - damage;
+              spawnExplosion(s.particles, b.x, b.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"], b.heavy ? 12 : 4);
               if (idx >= 0) {
-                scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 2;
+                scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + damage * 2;
                 scored = true;
               }
               if (en.hp <= 0) {
@@ -2762,6 +2783,7 @@ export default function FighterGame() {
       for (const b of s.bullets) {
         c.save();
         c.translate(b.x, b.y);
+        if (b.heavy) c.scale(1.9, 1.9);
         drawBullet(c, b.rapid);
         c.restore();
       }
