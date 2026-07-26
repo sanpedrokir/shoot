@@ -197,9 +197,6 @@ export default function AuthPanel({ onUserChange, refreshLeaderboardKey, onTopCh
         <div className="flex flex-col items-center gap-1.5">
           <div className="flex items-center gap-2 text-xs text-white/70">
             <img src={avatarSrcFor(user.avatar)} alt="" className="h-6 w-6 rounded-full" />
-            <span>
-              Playing as <span className="font-semibold text-white">{user.nickname}</span>
-            </span>
             <button onClick={logout} className="underline underline-offset-2">
               Logout
             </button>

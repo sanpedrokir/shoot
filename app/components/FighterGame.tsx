@@ -3137,7 +3137,7 @@ export default function FighterGame() {
           <img
             src="/brand/sky-raider-logo.webp"
             alt="Sky Raider"
-            className="w-full max-w-[19rem] drop-shadow-[0_4px_24px_rgba(56,132,255,0.4)]"
+            className="-mx-6 w-[calc(100%+3rem)] drop-shadow-[0_4px_24px_rgba(56,132,255,0.4)]"
           />
 
           <div className="grid w-full max-w-xs grid-cols-3 gap-2.5">
