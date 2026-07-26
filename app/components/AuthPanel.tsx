@@ -1,16 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { AVATAR_OPTIONS, avatarSrcFor } from "../lib/avatars";
 
 export interface AuthUser {
   nickname: string;
   highScore: number;
   maxLevel: number;
+  avatar: string | null;
 }
 
 export interface LeaderboardTop {
   nickname: string;
   highScore: number;
+  avatar: string | null;
 }
 
 interface AuthPanelProps {
@@ -57,6 +60,8 @@ export default function AuthPanel({ onUserChange, refreshLeaderboardKey, onTopCh
   const [submitting, setSubmitting] = useState(false);
   const [top, setTop] = useState<LeaderboardTop | null>(null);
   const [leaderboardChecked, setLeaderboardChecked] = useState(false);
+  const [showAvatarPicker, setShowAvatarPicker] = useState(false);
+  const [avatarSaving, setAvatarSaving] = useState(false);
 
   useEffect(() => {
     fetch("/api/auth/me", { cache: "no-store" })
@@ -116,7 +121,12 @@ export default function AuthPanel({ onUserChange, refreshLeaderboardKey, onTopCh
         setError(data.error ?? "Something went wrong.");
         return;
       }
-      const nextUser: AuthUser = { nickname: data.nickname, highScore: data.highScore, maxLevel: data.maxLevel };
+      const nextUser: AuthUser = {
+        nickname: data.nickname,
+        highScore: data.highScore,
+        maxLevel: data.maxLevel,
+        avatar: data.avatar,
+      };
       setUser(nextUser);
       onUserChange(nextUser);
       setPassword("");
@@ -144,14 +154,37 @@ export default function AuthPanel({ onUserChange, refreshLeaderboardKey, onTopCh
     onUserChange(null);
   };
 
+  const pickAvatar = async (avatarId: string) => {
+    if (!user || avatarSaving) return;
+    setAvatarSaving(true);
+    try {
+      const res = await fetch("/api/auth/avatar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ avatar: avatarId }),
+      });
+      if (res.ok) {
+        const nextUser = { ...user, avatar: avatarId };
+        setUser(nextUser);
+        onUserChange(nextUser);
+        setShowAvatarPicker(false);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setAvatarSaving(false);
+    }
+  };
+
   const hasPendingInput = !user && (nickname.trim().length > 0 || password.length > 0);
 
   return (
     <div className="flex flex-col items-center gap-2 text-white">
       {leaderboardChecked && (
-        <p className="rounded-full bg-black/30 px-4 py-1.5 text-base font-bold text-yellow-300">
+        <p className="flex items-center gap-1.5 rounded-full bg-black/30 px-4 py-1.5 text-base font-bold text-yellow-300">
           {top ? (
             <>
+              <img src={avatarSrcFor(top.avatar)} alt="" className="h-5 w-5 rounded-full" />
               🏆 {top.nickname} — {top.highScore}
             </>
           ) : (
@@ -161,13 +194,43 @@ export default function AuthPanel({ onUserChange, refreshLeaderboardKey, onTopCh
       )}
 
       {checkedSession && (user ? (
-        <div className="flex items-center gap-2 text-xs text-white/70">
-          <span>
-            Playing as <span className="font-semibold text-white">{user.nickname}</span>
-          </span>
-          <button onClick={logout} className="underline underline-offset-2">
-            Logout
-          </button>
+        <div className="flex flex-col items-center gap-1.5">
+          <div className="flex items-center gap-2 text-xs text-white/70">
+            <img src={avatarSrcFor(user.avatar)} alt="" className="h-6 w-6 rounded-full" />
+            <span>
+              Playing as <span className="font-semibold text-white">{user.nickname}</span>
+            </span>
+            <button onClick={logout} className="underline underline-offset-2">
+              Logout
+            </button>
+            <button
+              onClick={() => setShowAvatarPicker((v) => !v)}
+              aria-label="Avatar settings"
+              className="rounded-full bg-white/10 px-1.5 py-1 leading-none active:scale-95 transition-transform"
+            >
+              ⚙️
+            </button>
+          </div>
+          {showAvatarPicker && (
+            <div className="flex flex-col items-center gap-1.5 rounded-xl bg-white/10 px-3 py-2.5">
+              <p className="text-[10px] uppercase tracking-wide text-white/50">Choose your avatar</p>
+              <div className="flex flex-wrap justify-center gap-1.5">
+                {AVATAR_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.id}
+                    onClick={() => pickAvatar(opt.id)}
+                    aria-label={opt.label}
+                    disabled={avatarSaving}
+                    className={`rounded-full transition-transform active:scale-95 disabled:opacity-50 ${
+                      user.avatar === opt.id ? "ring-2 ring-blue-400" : ""
+                    }`}
+                  >
+                    <img src={opt.src} alt={opt.label} className="h-9 w-9 rounded-full" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       ) : (
         <div className="flex w-64 flex-col items-center gap-1.5 rounded-xl bg-white/10 px-4 py-3">

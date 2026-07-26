@@ -3117,34 +3117,45 @@ export default function FighterGame() {
 
       {status === "ready" && !showLocations && (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-5 overflow-y-auto bg-gradient-to-b from-black/25 via-black/45 to-black/75 px-6 py-8 text-center text-white font-sans">
-          <div className="flex flex-col items-center gap-0.5">
+          <div className="flex flex-col items-center gap-1">
             <span className="text-4xl drop-shadow-[0_0_18px_rgba(120,170,255,0.6)]">🛩️</span>
-            <h1 className="text-3xl sm:text-4xl font-extrabold tracking-tight drop-shadow-[0_2px_14px_rgba(80,140,255,0.4)]">
-              Sky Raider
+            <h1 className="bg-gradient-to-b from-white via-sky-200 to-blue-400 bg-clip-text text-4xl font-black italic tracking-tight text-transparent drop-shadow-[0_4px_14px_rgba(30,90,220,0.55)] sm:text-5xl">
+              SKY RAIDER
             </h1>
+            <div className="h-0.5 w-32 bg-gradient-to-r from-transparent via-blue-400/80 to-transparent" />
           </div>
 
           <div className="grid w-full max-w-xs grid-cols-3 gap-2.5">
             {(
               [
-                { m: "solo", label: "Single Player", icon: "🎮" },
-                { m: "host", label: "Get Ally", icon: "🤝" },
-                { m: "join", label: "Join Ally", icon: "🔗" },
-              ] as { m: LobbyMode; label: string; icon: string }[]
-            ).map(({ m, label, icon }) => (
-              <button
-                key={m}
-                onClick={() => selectLobbyMode(m)}
-                className={`flex flex-col items-center gap-1 rounded-2xl px-3 py-3.5 text-sm font-bold transition-all active:scale-95 ${
-                  lobbyMode === m
-                    ? "bg-blue-600 shadow-lg shadow-blue-900/40"
-                    : "bg-white/10 text-white/80 hover:bg-white/15"
-                }`}
-              >
-                <span className="text-xl leading-none">{icon}</span>
-                {label}
-              </button>
-            ))}
+                { m: "solo", label: "Single Player", icon: "🎮", accent: "blue" },
+                { m: "host", label: "Get Ally", icon: "🤝", accent: "amber" },
+                { m: "join", label: "Join Ally", icon: "🔗", accent: "violet" },
+              ] as { m: LobbyMode; label: string; icon: string; accent: "blue" | "amber" | "violet" }[]
+            ).map(({ m, label, icon, accent }) => {
+              const active = lobbyMode === m;
+              const accentClasses: Record<"blue" | "amber" | "violet", string> = {
+                blue: active
+                  ? "border-blue-400 bg-gradient-to-b from-blue-600/90 to-blue-900/90 shadow-[0_0_18px_2px_rgba(59,130,246,0.55)] text-white"
+                  : "border-blue-400/30 bg-white/5 text-white/70 hover:border-blue-400/60",
+                amber: active
+                  ? "border-amber-400 bg-gradient-to-b from-amber-500/90 to-amber-800/90 shadow-[0_0_18px_2px_rgba(245,158,11,0.55)] text-white"
+                  : "border-amber-400/30 bg-white/5 text-white/70 hover:border-amber-400/60",
+                violet: active
+                  ? "border-violet-400 bg-gradient-to-b from-violet-600/90 to-violet-900/90 shadow-[0_0_18px_2px_rgba(139,92,246,0.55)] text-white"
+                  : "border-violet-400/30 bg-white/5 text-white/70 hover:border-violet-400/60",
+              };
+              return (
+                <button
+                  key={m}
+                  onClick={() => selectLobbyMode(m)}
+                  className={`flex flex-col items-center gap-1 rounded-2xl border-2 px-3 py-3.5 text-sm font-bold transition-all active:scale-95 ${accentClasses[accent]}`}
+                >
+                  <span className="text-xl leading-none">{icon}</span>
+                  {label}
+                </button>
+              );
+            })}
           </div>
 
           {lobbyMode === "host" && (
@@ -3219,13 +3230,16 @@ export default function FighterGame() {
           />
 
           {(lobbyMode === "solo" || (lobbyMode === "host" && connStatus === "connected")) && (
-            <button
-              onClick={handleStart}
-              disabled={authPending}
-              className="mt-1 rounded-full bg-blue-600 px-8 py-3 text-base font-bold shadow-lg shadow-blue-900/40 active:scale-95 transition-transform disabled:opacity-40 disabled:active:scale-100"
-            >
-              Start
-            </button>
+            <div className="relative mt-1">
+              <span className="pointer-events-none absolute -inset-3 rounded-full bg-amber-400/30 blur-xl" />
+              <button
+                onClick={handleStart}
+                disabled={authPending}
+                className="relative rounded-full border-2 border-amber-300/80 bg-gradient-to-b from-amber-300 via-amber-500 to-amber-700 px-10 py-3 text-lg font-extrabold tracking-wide text-amber-950 shadow-[0_4px_0_0_rgba(120,53,15,0.9),0_10px_24px_-4px_rgba(245,158,11,0.6)] transition-all active:translate-y-0.5 active:shadow-[0_1px_0_0_rgba(120,53,15,0.9)] disabled:opacity-40 disabled:active:translate-y-0"
+              >
+                🛩️ Start
+              </button>
+            </div>
           )}
         </div>
       )}

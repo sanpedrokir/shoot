@@ -35,5 +35,5 @@ export async function POST(request: NextRequest) {
   }
 
   await setSessionCookie(id);
-  return NextResponse.json({ nickname, highScore, maxLevel });
+  return NextResponse.json({ nickname, highScore, maxLevel, avatar: null });
 }

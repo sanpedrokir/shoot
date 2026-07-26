@@ -12,11 +12,18 @@ export async function POST(request: NextRequest) {
   }
 
   const rows = await sql`
-    SELECT id, nickname, password_hash, high_score, max_level FROM users
+    SELECT id, nickname, password_hash, high_score, max_level, avatar FROM users
     WHERE LOWER(nickname) = LOWER(${nickname})
   `;
   const row = rows[0] as
-    | { id: string; nickname: string; password_hash: string; high_score: number; max_level: number }
+    | {
+        id: string;
+        nickname: string;
+        password_hash: string;
+        high_score: number;
+        max_level: number;
+        avatar: string | null;
+      }
     | undefined;
 
   if (!row || !verifyPassword(password, row.password_hash)) {
@@ -42,5 +49,5 @@ export async function POST(request: NextRequest) {
   }
 
   await setSessionCookie(row.id);
-  return NextResponse.json({ nickname: row.nickname, highScore, maxLevel });
+  return NextResponse.json({ nickname: row.nickname, highScore, maxLevel, avatar: row.avatar });
 }

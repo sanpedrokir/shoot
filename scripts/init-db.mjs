@@ -9,8 +9,13 @@ await sql`
     password_hash text NOT NULL,
     high_score integer NOT NULL DEFAULT 0,
     max_level integer NOT NULL DEFAULT 1,
+    avatar text,
     created_at timestamptz NOT NULL DEFAULT now()
   )
+`;
+
+await sql`
+  ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar text
 `;
 
 await sql`
