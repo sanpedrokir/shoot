@@ -68,7 +68,7 @@ type Player = {
 
 type Status = "ready" | "playing" | "levelcomplete" | "gameover" | "quit";
 type NetRole = "solo" | "host" | "ally";
-type LobbyMode = "solo" | "host" | "join" | "daily";
+type LobbyMode = "solo" | "host" | "join";
 type ConnStatus = "idle" | "connecting" | "connected" | "error";
 
 interface GameState {
@@ -148,8 +148,20 @@ function healInvulnDuration(shieldTotal: number) {
   return clamp(2 + shieldTotal * 0.004, 2.5, 6);
 }
 const GRAVITY = 130;
-// Solo and co-op games play different background tracks.
-const SOLO_MUSIC_TRACK = "/audio/theme.mp3";
+// Solo games rotate through a pool of tracks (one picked at random each time
+// a level starts) instead of looping the same one the whole run. Co-op
+// always plays its own single track, since both players need to hear the
+// same thing.
+const SOLO_MUSIC_TRACKS = [
+  "/audio/theme.mp3",
+  "/audio/theme-solo-2.mp3",
+  "/audio/theme-solo-3.mp3",
+  "/audio/theme-solo-4.mp3",
+  "/audio/theme-solo-5.mp3",
+];
+function pickSoloMusicTrack(): string {
+  return SOLO_MUSIC_TRACKS[Math.floor(Math.random() * SOLO_MUSIC_TRACKS.length)];
+}
 const COOP_MUSIC_TRACK = "/audio/theme-coop.mp3";
 // Soft jazz piano plays while browsing the Locations screen — a strategy-map
 // moment rather than gameplay, so it gets its own calmer track.
@@ -160,10 +172,6 @@ const MENU_MUSIC_TRACK = "/audio/theme-menu.mp3";
 // isn't practical), so these cover it without ever needing the keyboard.
 const CHAT_PRESETS = ["Watch out!", "Nice shot!", "Need help!", "Behind you!", "GG!"];
 const CHAT_BUBBLE_DURATION = 3000;
-// Everyone gets the same starting difficulty for the daily challenge — a
-// bit more bite than the level-1 default, since it's meant to be a real
-// challenge to compete over, not just another normal run.
-const DAILY_CHALLENGE_LEVEL = 5;
 // Pusher hard-caps client events at 10/sec per connection; staying well
 // under that avoids events getting silently dropped (which reads as
 // mounting lag that eventually "hangs" once updates stop arriving).
@@ -1173,7 +1181,6 @@ export default function FighterGame() {
   const localIdRef = useRef<string>("");
   const netRoleRef = useRef<NetRole>("solo");
   const playerIdsRef = useRef<string[]>([]);
-  const isDailyRef = useRef(false);
   const channelRef = useRef<PresenceChannel | null>(null);
   const pendingInputsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const broadcastAccumRef = useRef(0);
@@ -1255,28 +1262,6 @@ export default function FighterGame() {
   const userRef = useRef<AuthUser | null>(null);
   const [refreshLeaderboardKey, setRefreshLeaderboardKey] = useState(0);
   const [globalTop, setGlobalTop] = useState<LeaderboardTop | null>(null);
-  const [refreshDailyKey, setRefreshDailyKey] = useState(0);
-  const [dailyTop, setDailyTop] = useState<{ nickname: string; score: number }[]>([]);
-  const [dailyTopChecked, setDailyTopChecked] = useState(false);
-
-  // Only fetches while the daily tab is actually open (no point polling it
-  // in the background), and again whenever a score just got submitted.
-  useEffect(() => {
-    if (lobbyMode !== "daily") return;
-    let cancelled = false;
-    fetch("/api/daily-leaderboard", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((data: { top: { nickname: string; score: number }[] }) => {
-        if (!cancelled) setDailyTop(data.top);
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) setDailyTopChecked(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [lobbyMode, refreshDailyKey]);
   // True while the sign-up/log-in form has unsubmitted nickname/password
   // text sitting in it — Start is held off until the player either finishes
   // that (so their score doesn't silently end up on a guest session) or
@@ -1405,19 +1390,13 @@ export default function FighterGame() {
     // this call and the next React commit.
     statusRef.current = "playing";
     setStatus("playing");
-    musicPlayerRef.current?.start(role === "solo" ? SOLO_MUSIC_TRACK : COOP_MUSIC_TRACK);
+    musicPlayerRef.current?.start(role === "solo" ? pickSoloMusicTrack() : COOP_MUSIC_TRACK);
   };
 
   const startSolo = (level: number = soloStartLevel) => {
-    isDailyRef.current = false;
     setJustUnlockedLocation(null);
     setSoloStartLevel(level);
     beginGame("solo", [localIdRef.current], level);
-  };
-
-  const startDaily = () => {
-    isDailyRef.current = true;
-    beginGame("solo", [localIdRef.current], DAILY_CHALLENGE_LEVEL);
   };
 
   const hostRoom = () => {
@@ -1516,15 +1495,13 @@ export default function FighterGame() {
     if (authPending) return;
     // Single Player opens the map instead of launching straight in --
     // picking a location (or tapping the frontier one) is what actually
-    // starts the run. Daily/co-op are unaffected: those aren't location-based.
+    // starts the run. Co-op is unaffected: it isn't location-based.
     if (lobbyMode === "solo") setShowLocations(true);
-    else if (lobbyMode === "daily") startDaily();
     else if (lobbyMode === "host") hostStartOrRestart();
   };
 
   const handlePlayAgain = () => {
     if (netRole === "host") hostStartOrRestart();
-    else if (isDailyRef.current) startDaily();
     else startSolo();
   };
 
@@ -1609,7 +1586,6 @@ export default function FighterGame() {
       }
       if (statusRef.current === "ready" && !authPendingRef.current) {
         if (lobbyModeRef.current === "solo") startSolo();
-        else if (lobbyModeRef.current === "daily") startDaily();
       }
       e.preventDefault();
     };
@@ -1649,7 +1625,6 @@ export default function FighterGame() {
         stateRef.current?.keys.add(e.key.toLowerCase());
         if (statusRef.current === "ready" && !authPendingRef.current) {
           if (lobbyModeRef.current === "solo") startSolo();
-          else if (lobbyModeRef.current === "daily") startDaily();
         }
       }
     };
@@ -2004,21 +1979,30 @@ export default function FighterGame() {
       // bursts arrive both bigger and more often, scaled off how many extra
       // teammates are in the fight.
       const extraPlayers = s.players.length - 1;
+      // Last stretch of the clock: falling bursts keep arriving (rather than
+      // stopping once the finale cluster lands) and come in bigger, faster,
+      // and more often, so the closing seconds read as the hardest part of
+      // the level instead of the finale cluster being the last word.
+      const timeLeft = s.levelDuration - s.elapsed;
+      const finalePush = timeLeft <= 8;
       s.spawnTimer -= dt;
-      // Once the finale lineup has landed, the regular random bursts stop —
-      // it should read as a clean shooting gallery, not get cluttered by
-      // more planes falling in around it.
-      if (s.spawnTimer <= 0 && !s.finalWaveSpawned) {
+      // Once the finale lineup has landed, the regular random bursts stop
+      // (except during the finalePush window above) — it should read as a
+      // clean shooting gallery, not get cluttered by more planes falling in
+      // around it.
+      if (s.spawnTimer <= 0 && (!s.finalWaveSpawned || finalePush)) {
         s.spawnTimer =
           (clamp(1.6 - difficulty * 0.5 - swarmFocus * 0.3, 0.45, 1.6) + Math.random() * 0.3) /
-          (1 + extraPlayers * 0.2);
+          (1 + extraPlayers * 0.2) /
+          (finalePush ? 2.4 : 1);
         // Every burst is at least a pair so the wedge formation always reads
         // as a squadron arriving together — plus three extra enemies per
         // teammate beyond the first (so co-op sees a noticeably bigger
         // squadron than solo, not just one plane more), plus a little more
-        // on top during the peak of a squadron-swarm phase.
+        // on top during the peak of a squadron-swarm phase, plus a final
+        // couple more once the last 8 seconds kick in.
         const extraSwarm = Math.min(1, Math.floor(swarmFocus * 2.2));
-        const count = 2 + extraPlayers * 3 + extraSwarm;
+        const count = 2 + extraPlayers * 3 + extraSwarm + (finalePush ? 2 : 0);
         const spacing = 34;
         const offsets = wedgeFormation(count, spacing, 22);
         const maxAbsDx = Math.max(...offsets.map((o) => Math.abs(o.dx)));
@@ -2028,7 +2012,7 @@ export default function FighterGame() {
           s.enemies.push({
             x: clamp(anchorX + offsets[i].dx, 30, s.width - 30),
             y: -30 + offsets[i].dy,
-            vy: 55 + Math.random() * 35 + Math.min(difficulty, 8) * 40,
+            vy: 55 + Math.random() * 35 + Math.min(difficulty, 8) * 40 + (finalePush ? 90 : 0),
             phase: Math.random() * Math.PI * 2,
             amp: 20 + Math.random() * 40,
             scale: 0.85 + Math.random() * 0.35,
@@ -2079,7 +2063,6 @@ export default function FighterGame() {
       // gets a fresh enemy after a short beat, so a fast player emptying the
       // whole cluster doesn't leave the sky empty for the rest of the window
       // — it keeps refilling until time actually runs out.
-      const timeLeft = s.levelDuration - s.elapsed;
       const spawnFinalEnemy = (cx: number, cy: number) => {
         s.enemies.push({
           x: cx,
@@ -2095,7 +2078,7 @@ export default function FighterGame() {
             cy,
             radius: 12 + Math.random() * 10,
             angle: Math.random() * Math.PI * 2,
-            speed: (Math.random() < 0.5 ? -1 : 1) * (1.1 + Math.random() * 0.9),
+            speed: (Math.random() < 0.5 ? -1 : 1) * (1.1 + Math.random() * 0.9) * (finalePush ? 1.6 : 1),
           },
         });
       };
@@ -2118,7 +2101,7 @@ export default function FighterGame() {
       } else if (s.finalWaveSpawned && timeLeft > 0) {
         s.finalRespawnTimer -= dt;
         if (s.finalRespawnTimer <= 0) {
-          s.finalRespawnTimer = 0.8 + Math.random() * 0.8;
+          s.finalRespawnTimer = finalePush ? 0.3 + Math.random() * 0.3 : 0.8 + Math.random() * 0.8;
           const occupied = new Set(s.enemies.filter((en) => en.orbit).map((en) => `${en.orbit!.cx},${en.orbit!.cy}`));
           const emptySlots = s.finalSlots.filter((slot) => !occupied.has(`${slot.cx},${slot.cy}`));
           if (emptySlots.length > 0) {
@@ -2417,14 +2400,6 @@ export default function FighterGame() {
                     body: JSON.stringify({ score: nb, level: s.level }),
                   }).catch(() => {});
                   setRefreshLeaderboardKey((k) => k + 1);
-                  if (isDailyRef.current) {
-                    fetch("/api/daily-score", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ score: scoreRef.current }),
-                    }).catch(() => {});
-                    setRefreshDailyKey((k) => k + 1);
-                  }
                 }
                 return nb;
               });
@@ -2448,21 +2423,19 @@ export default function FighterGame() {
         statusRef.current = "levelcomplete";
         setStatus("levelcomplete");
         musicPlayerRef.current?.stop();
-        if (!isDailyRef.current) {
-          const nextLevel = s.level + 1;
-          const crossedLocation = locationIndexForLevel(nextLevel) > locationIndexForLevel(s.level);
-          setJustUnlockedLocation(crossedLocation ? getLocationName(locationIndexForLevel(nextLevel)) : null);
-          setSoloStartLevel(nextLevel);
-          setUnlockedLevel((u) => {
-            if (nextLevel <= u) return u;
-            try {
-              window.localStorage.setItem(UNLOCKED_LEVEL_KEY, String(nextLevel));
-            } catch {
-              // ignore
-            }
-            return nextLevel;
-          });
-        }
+        const nextLevel = s.level + 1;
+        const crossedLocation = locationIndexForLevel(nextLevel) > locationIndexForLevel(s.level);
+        setJustUnlockedLocation(crossedLocation ? getLocationName(locationIndexForLevel(nextLevel)) : null);
+        setSoloStartLevel(nextLevel);
+        setUnlockedLevel((u) => {
+          if (nextLevel <= u) return u;
+          try {
+            window.localStorage.setItem(UNLOCKED_LEVEL_KEY, String(nextLevel));
+          } catch {
+            // ignore
+          }
+          return nextLevel;
+        });
         setBest((b) => {
           const nb = Math.max(b, scoreRef.current);
           try {
@@ -2477,14 +2450,6 @@ export default function FighterGame() {
               body: JSON.stringify({ score: nb, level: s.level }),
             }).catch(() => {});
             setRefreshLeaderboardKey((k) => k + 1);
-            if (isDailyRef.current) {
-              fetch("/api/daily-score", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ score: scoreRef.current }),
-              }).catch(() => {});
-              setRefreshDailyKey((k) => k + 1);
-            }
           }
           return nb;
         });
@@ -2716,9 +2681,9 @@ export default function FighterGame() {
   }, []);
 
   const isAlly = netRole === "ally";
-  // True for a real single-player run (not the fixed-level Daily Challenge,
-  // not co-op) — the only mode where surviving actually advances soloStartLevel,
-  // so "Play Again" should read as forward progress rather than a replay.
+  // True for a real single-player run (not co-op) — the only mode where
+  // surviving actually advances soloStartLevel, so "Play Again" should read
+  // as forward progress rather than a replay.
   const isProgressiveRun = netRole === "solo" && lobbyMode === "solo";
 
   // Locations roadmap: a winding route of location nodes climbing from the
@@ -2785,6 +2750,11 @@ export default function FighterGame() {
           <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm">
             <div className="text-xs uppercase tracking-wide text-white/60">Score</div>
             <div className="text-lg font-bold tabular-nums leading-tight">{score}</div>
+            {lobbyMode === "solo" && (
+              <div className="max-w-[8rem] truncate text-[10px] text-white/50">
+                📍 {getLocationName(locationIndexForLevel(soloStartLevel))}
+              </div>
+            )}
           </div>
         ) : (
           <div className="flex gap-1.5">
@@ -3154,11 +3124,10 @@ export default function FighterGame() {
             </h1>
           </div>
 
-          <div className="grid w-full max-w-xs grid-cols-2 gap-2.5">
+          <div className="grid w-full max-w-xs grid-cols-3 gap-2.5">
             {(
               [
                 { m: "solo", label: "Single Player", icon: "🎮" },
-                { m: "daily", label: "Daily Challenge", icon: "⚡" },
                 { m: "host", label: "Get Ally", icon: "🤝" },
                 { m: "join", label: "Join Ally", icon: "🔗" },
               ] as { m: LobbyMode; label: string; icon: string }[]
@@ -3177,34 +3146,6 @@ export default function FighterGame() {
               </button>
             ))}
           </div>
-
-          {lobbyMode === "daily" && (
-            <div className="flex w-64 flex-col items-center gap-1.5 rounded-xl bg-white/10 px-4 py-3">
-              <p className="text-xs text-white/70">
-                Same starting difficulty for everyone, resets daily. Log in above to put your score on today&apos;s
-                board.
-              </p>
-              {dailyTopChecked && (
-                <div className="w-full text-left text-xs text-white/80">
-                  <div className="mb-1 font-bold uppercase tracking-wide text-white/50">Today&apos;s Top</div>
-                  {dailyTop.length === 0 ? (
-                    <p className="text-white/50">No scores yet today — be the first!</p>
-                  ) : (
-                    <ol className="flex flex-col gap-0.5">
-                      {dailyTop.slice(0, 5).map((row, i) => (
-                        <li key={i} className="flex justify-between">
-                          <span>
-                            {i + 1}. {row.nickname}
-                          </span>
-                          <span className="font-semibold text-white">{row.score.toLocaleString()}</span>
-                        </li>
-                      ))}
-                    </ol>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
 
           {lobbyMode === "host" && (
             <div className="flex flex-col items-center gap-1.5 rounded-xl bg-white/10 px-4 py-3">
@@ -3277,7 +3218,7 @@ export default function FighterGame() {
             onPendingAuthChange={setAuthPending}
           />
 
-          {(lobbyMode === "solo" || lobbyMode === "daily" || (lobbyMode === "host" && connStatus === "connected")) && (
+          {(lobbyMode === "solo" || (lobbyMode === "host" && connStatus === "connected")) && (
             <button
               onClick={handleStart}
               disabled={authPending}
