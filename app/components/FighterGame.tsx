@@ -153,11 +153,11 @@ const GRAVITY = 130;
 // always plays its own single track, since both players need to hear the
 // same thing.
 const SOLO_MUSIC_TRACKS = [
-  "/audio/theme.mp3",
-  "/audio/theme-solo-2.mp3",
-  "/audio/theme-solo-3.mp3",
-  "/audio/theme-solo-4.mp3",
-  "/audio/theme-solo-5.mp3",
+  "/audio/theme-solo-ente-evil.mp3",
+  "/audio/theme-solo-metal-ages.wav",
+  "/audio/theme-solo-menace.mp3",
+  "/audio/theme-solo-calamity.mp3",
+  "/audio/theme-solo-some-must-fall.flac",
 ];
 function pickSoloMusicTrack(): string {
   return SOLO_MUSIC_TRACKS[Math.floor(Math.random() * SOLO_MUSIC_TRACKS.length)];
