@@ -1398,6 +1398,18 @@ export default function FighterGame() {
   // localTargetRef is what pointer/keyboard input is steering toward.
   const localTargetRef = useRef({ x: 0, y: 0 });
   const localPosRef = useRef<{ x: number; y: number } | null>(null);
+  // Touch steering is relative-drag, not "jump to wherever the finger is" --
+  // a finger (especially a bigger one) held directly over the plane hides
+  // it and the space right around it, which is exactly the area that
+  // matters most for dodging. dragOriginRef is where the finger first
+  // touched down; dragPlaneOriginRef is the plane's position at that same
+  // moment. Every subsequent move applies the finger's delta from the touch
+  // origin to the plane's origin, so the plane can be steered from a touch
+  // point well below (or beside) it -- e.g. resting a thumb near the bottom
+  // of the screen -- without ever needing to be touched directly. Mouse
+  // input (desktop testing) keeps the simpler direct-follow behavior.
+  const dragOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const dragPlaneOriginRef = useRef<{ x: number; y: number } | null>(null);
   // Latest chat message per player id, keyed by id so only the most recent
   // one shows (a speech bubble over that player's plane, not a running
   // log) — expires on its own via `until`, no explicit cleanup needed.
@@ -1982,11 +1994,22 @@ export default function FighterGame() {
       if (!s) return;
       s.pointerDown = true;
       const p = getLocalPoint(e.clientX, e.clientY);
-      localTargetRef.current = p;
-      const pl = getLocalPlayer(s);
-      if (pl) {
-        pl.targetX = p.x;
-        pl.targetY = p.y;
+      if (e.pointerType === "mouse") {
+        localTargetRef.current = p;
+        const pl = getLocalPlayer(s);
+        if (pl) {
+          pl.targetX = p.x;
+          pl.targetY = p.y;
+        }
+      } else {
+        // Touch/pen: steer relative to how far the finger moves from where
+        // it first landed, instead of snapping the plane straight under it
+        // -- a finger (especially a bigger one) resting on the plane hides
+        // it and the space right around it, exactly where dodging matters
+        // most. This lets a finger rest well below (or beside) the plane
+        // and still steer it.
+        dragOriginRef.current = p;
+        dragPlaneOriginRef.current = { x: localTargetRef.current.x, y: localTargetRef.current.y };
       }
       if (statusRef.current === "ready" && !authPendingRef.current) {
         if (lobbyModeRef.current === "solo") startSolo();
@@ -1996,7 +2019,7 @@ export default function FighterGame() {
     const onPointerMove = (e: PointerEvent) => {
       const s = stateRef.current;
       if (!s) return;
-      if (e.pointerType === "mouse" || s.pointerDown) {
+      if (e.pointerType === "mouse") {
         const p = getLocalPoint(e.clientX, e.clientY);
         localTargetRef.current = p;
         const pl = getLocalPlayer(s);
@@ -2004,11 +2027,27 @@ export default function FighterGame() {
           pl.targetX = p.x;
           pl.targetY = p.y;
         }
+      } else if (s.pointerDown && dragOriginRef.current && dragPlaneOriginRef.current) {
+        const p = getLocalPoint(e.clientX, e.clientY);
+        const dx = p.x - dragOriginRef.current.x;
+        const dy = p.y - dragOriginRef.current.y;
+        const target = {
+          x: clamp(dragPlaneOriginRef.current.x + dx, PLAYER_RADIUS, s.width - PLAYER_RADIUS),
+          y: clamp(dragPlaneOriginRef.current.y + dy, PLAYER_RADIUS, s.height - PLAYER_RADIUS),
+        };
+        localTargetRef.current = target;
+        const pl = getLocalPlayer(s);
+        if (pl) {
+          pl.targetX = target.x;
+          pl.targetY = target.y;
+        }
       }
     };
     const onPointerUp = () => {
       const s = stateRef.current;
       if (s) s.pointerDown = false;
+      dragOriginRef.current = null;
+      dragPlaneOriginRef.current = null;
     };
 
     canvas.addEventListener("pointerdown", onPointerDown);
@@ -2118,10 +2157,19 @@ export default function FighterGame() {
             if (inputAccumRef.current >= INPUT_SEND_INTERVAL) {
               inputAccumRef.current = 0;
               if (channelRef.current) {
+                // Sent as a 0-1 fraction of this client's own canvas, not raw
+                // pixels -- the host's screen is frequently a different size,
+                // and applying raw pixels straight onto the host's canvas
+                // silently mis-places the ally's simulated plane by however
+                // much the two screens differ (was the root cause of the
+                // ally being unable to reliably collect pickups: enemies/
+                // bombs are forgiving enough in size to still register, but
+                // pickups are a tight one-frame window and a mis-placed
+                // plane just never lines up with them).
                 channelRef.current.trigger("client-input", {
                   id: localIdRef.current,
-                  x: localTargetRef.current.x,
-                  y: localTargetRef.current.y,
+                  x: localTargetRef.current.x / s.width,
+                  y: localTargetRef.current.y / s.height,
                 } satisfies InputMessage);
               }
             }
@@ -2132,8 +2180,11 @@ export default function FighterGame() {
               for (const [id, target] of pendingInputsRef.current) {
                 const pl = s.players.find((p) => p.id === id);
                 if (pl) {
-                  pl.targetX = target.x;
-                  pl.targetY = target.y;
+                  // target is a 0-1 fraction of the ally's own canvas (see
+                  // where client-input is sent) -- scale onto the host's
+                  // own canvas here rather than applying it as raw pixels.
+                  pl.targetX = target.x * s.width;
+                  pl.targetY = target.y * s.height;
                 }
               }
             }
@@ -2499,7 +2550,7 @@ export default function FighterGame() {
       if (s.spawnTimer <= 0 && !s.bossSpawned) {
         s.spawnTimer =
           (clamp(1.8 - difficulty * 0.35 - swarmFocus * 0.3, 0.7, 1.8) + Math.random() * 0.35) /
-          (1 + extraPlayers * 0.35);
+          (1 + extraPlayers * 0.45);
         // Every burst is at least a pair so the wedge formation always reads
         // as a squadron arriving together — plus up to five extra enemies
         // per teammate beyond the first, scaled by the *shaped* swarm focus
@@ -2511,7 +2562,7 @@ export default function FighterGame() {
         // not just a spawn timer that's already hit its floor.
         const extraSwarm = Math.min(1, Math.floor(swarmFocus * 2.2));
         const difficultySwarm = Math.floor(difficulty / 4);
-        const coopPlaneBonus = Math.round(extraPlayers * coopBonusIntensity(swarmFocus) * 5);
+        const coopPlaneBonus = Math.round(extraPlayers * coopBonusIntensity(swarmFocus) * 6);
         const desiredCount = 2 + coopPlaneBonus + extraSwarm + difficultySwarm;
         // Hard-capped against MAX_LIVE_ENEMIES so an extremely deep/long run
         // (the difficulty curve climbs forever) can never grow the live

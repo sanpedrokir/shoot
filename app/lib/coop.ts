@@ -52,6 +52,9 @@ export function leaveRoom(code: string) {
 
 // --- Wire message shapes -----------------------------------------------
 
+// x/y are a 0-1 fraction of the sending client's own canvas width/height,
+// not raw pixels -- the receiving host scales onto its own canvas size,
+// since the two devices' screens are rarely the same dimensions.
 export interface InputMessage {
   id: string;
   x: number;
