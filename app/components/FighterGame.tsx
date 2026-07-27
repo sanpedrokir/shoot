@@ -24,6 +24,7 @@ import {
   playSmartBombPickupSound,
   playBossRoarSound,
   playSelectSound,
+  vibrate,
   primeAudioContext,
 } from "../lib/sfx";
 import {
@@ -101,6 +102,10 @@ type Player = {
   // Elapsed-time threshold (host-simulation-only, not networked — see the
   // note by RAPIDFIRE_DURATION) until which this plane fires faster.
   rapidFireUntil: number;
+  // Combo streak bookkeeping (host-simulation-only, not networked -- only
+  // the resulting score bonus is, since score is already a synced field).
+  comboStreak: number;
+  lastKillAt: number;
 };
 
 type Status = "ready" | "playing" | "levelcomplete" | "gameover" | "quit";
@@ -204,6 +209,12 @@ const BOSS_MISSILE_DAMAGE = 8;
 // it!" button without any reading required mid-fight.
 const BOSS_BLAST_COOLDOWN = 12;
 const BOSS_BLAST_DAMAGE_FRACTION = 0.2;
+// Combo streak: consecutive regular-enemy kills within this many seconds of
+// each other keep growing the streak (and its score bonus); a longer gap
+// resets it. Capped so an extremely long streak doesn't spiral the score.
+const COMBO_WINDOW = 1.4;
+const COMBO_STREAK_CAP = 8;
+const COMBO_BONUS_PER_STREAK = 3;
 const RAPIDFIRE_DURATION = 8;
 
 const SMARTBOMB_HIT_RADIUS = 18;
@@ -586,6 +597,8 @@ function makePlayers(
       fireTimer: 0,
       missileTimer: 0,
       rapidFireUntil: startingRapidFireBonus,
+      comboStreak: 0,
+      lastKillAt: -999,
     };
   });
 }
@@ -601,7 +614,7 @@ function makeInitialState(
   // they stay consistent with each other — a star that's bigger and
   // brighter also moves faster, exactly like something genuinely closer to
   // the camera would, instead of those three cues fighting each other.
-  const stars: Star[] = Array.from({ length: 70 }, () => {
+  const stars: Star[] = Array.from({ length: lowGraphicsMode ? 30 : 70 }, () => {
     const depth = Math.random();
     return {
       x: Math.random() * width,
@@ -748,6 +761,13 @@ function drawStar(ctx: CanvasRenderingContext2D, x: number, y: number, r: number
   ctx.fill();
 }
 
+// Module-level rather than threaded through every spawnExplosion call site
+// (there are dozens) -- toggled by the low-graphics preference, read once
+// per explosion. Cuts the heaviest performance cost in busy moments (a boss
+// death alone spawns 100+ particles across several bursts) for older/weaker
+// phones without touching every call site individually.
+let lowGraphicsMode = false;
+
 function spawnExplosion(
   particles: Particle[],
   x: number,
@@ -756,6 +776,7 @@ function spawnExplosion(
   count = 18,
   scale = 1
 ) {
+  if (lowGraphicsMode) count = Math.max(4, Math.round(count * 0.4));
   for (let i = 0; i < count; i++) {
     const angle = Math.random() * Math.PI * 2;
     const speed = (40 + Math.random() * 140) * scale;
@@ -1351,6 +1372,24 @@ function readStoredBest(): number {
   }
 }
 
+function readStoredLowGraphics(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem("skyfighter-low-graphics") === "1";
+  } catch {
+    return false;
+  }
+}
+
+function readStoredTutorialSeen(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    return window.localStorage.getItem("skyfighter-seen-tutorial") === "1";
+  } catch {
+    return true;
+  }
+}
+
 const UNLOCKED_LEVEL_KEY = "skyfighter-unlocked-level";
 
 function readStoredUnlockedLevel(): number {
@@ -1491,6 +1530,16 @@ export default function FighterGame() {
     const t = setTimeout(() => setAchievementToast(null), 1800);
     return () => clearTimeout(t);
   }, [achievementToast]);
+  // Combo streak toast -- host/solo only (see COMBO_WINDOW), since only
+  // the client actually running the simulation can know about it in real
+  // time; the ally's own combo bonus still lands in their synced score,
+  // they just don't get this popup for it.
+  const [comboToast, setComboToast] = useState<{ streak: number; bonus: number } | null>(null);
+  useEffect(() => {
+    if (!comboToast) return;
+    const t = setTimeout(() => setComboToast(null), 1100);
+    return () => clearTimeout(t);
+  }, [comboToast]);
   // Persists the mutated lifetime-stats ref and surfaces a toast for
   // whichever achievement(s) just crossed their threshold -- called
   // directly from event sites (a kill, a shield pickup, a boss kill, a
@@ -1501,7 +1550,10 @@ export default function FighterGame() {
   const recordLifetimeStats = () => {
     writeLifetimeStats(lifetimeStatsRef.current);
     const newly = checkForNewUnlocks(lifetimeStatsRef.current, unlockedLevelRef.current);
-    if (newly.length > 0) setAchievementToast(newly[0]);
+    if (newly.length > 0) {
+      setAchievementToast(newly[0]);
+      vibrate([15, 40, 15]);
+    }
   };
   // Seeded with an SSR-safe default (matching the server-rendered markup) and
   // synced from localStorage in a mount effect below, to avoid a hydration
@@ -1556,6 +1608,32 @@ export default function FighterGame() {
   }, [authPending]);
 
   const [musicMuted, setMusicMuted] = useState(false);
+  // Fewer particles/stars for older or weaker phones (see lowGraphicsMode,
+  // the module-level flag spawnExplosion/makeInitialState actually read --
+  // this state is just what drives the toggle button and persistence).
+  // Seeded with an SSR-safe default (matching the server-rendered markup)
+  // and corrected to the real stored value right after mount.
+  const [lowGraphics, setLowGraphics] = useState(false);
+  useEffect(() => {
+    lowGraphicsMode = lowGraphics;
+    try {
+      window.localStorage.setItem("skyfighter-low-graphics", lowGraphics ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, [lowGraphics]);
+  // First-time-player hint overlay -- defaults to hidden (SSR-safe, and
+  // "assume already seen" is the safer default anyway) and only flips on
+  // after mount if this device genuinely hasn't dismissed it before.
+  const [showTutorial, setShowTutorial] = useState(false);
+  const dismissTutorial = () => {
+    setShowTutorial(false);
+    try {
+      window.localStorage.setItem("skyfighter-seen-tutorial", "1");
+    } catch {
+      // ignore
+    }
+  };
   // Some mobile/in-app browsers silently swallow a play() call even from a
   // seemingly valid gesture (stricter than the standard autoplay spec) --
   // this is a guaranteed-to-work fallback: a real button the player taps
@@ -1665,6 +1743,8 @@ export default function FighterGame() {
     const u = readStoredUnlockedLevel();
     setUnlockedLevel(u);
     setSoloStartLevel(u);
+    setLowGraphics(readStoredLowGraphics());
+    setShowTutorial(!readStoredTutorialSeen());
   }, []);
 
   useEffect(() => {
@@ -1861,6 +1941,7 @@ export default function FighterGame() {
   const fireBossBlast = () => {
     if (!bossBlastReady) return;
     playSelectSound();
+    vibrate(40);
     if (netRoleRef.current === "ally") {
       channelRef.current?.trigger("client-bossblast", { id: localIdRef.current } satisfies BossBlastMessage);
     } else {
@@ -2127,6 +2208,10 @@ export default function FighterGame() {
               if (prevSnap) {
                 if (latestSnapshotRef.current.score > prevSnap.score) playEnemyHitSound();
                 if (latestSnapshotRef.current.shieldTotal > prevSnap.shieldTotal) playShieldPickupSound();
+                // Same zero-extra-traffic idea for haptics -- lives is
+                // already synced every snapshot, so a drop is a free signal
+                // this client (or its teammate) just got hit.
+                if (latestSnapshotRef.current.lives < prevSnap.lives) vibrate(40);
                 const gotRapidFire = latestSnapshotRef.current.players.some((pl) => {
                   const prevPl = prevSnap.players.find((p) => p.id === pl.id);
                   return prevPl && pl.rapidFireUntil > prevPl.rapidFireUntil;
@@ -2138,6 +2223,7 @@ export default function FighterGame() {
                 // too, without needing a dedicated network message for it.
                 if (latestSnapshotRef.current.score - prevSnap.score >= 50) {
                   triggerShake(s, 12, 0.5);
+                  vibrate([20, 30, 20]);
                 }
                 // Boss arrival, detected the same zero-extra-traffic way --
                 // the enemies array (already part of every snapshot) just
@@ -2145,7 +2231,10 @@ export default function FighterGame() {
                 const bossJustArrived =
                   !prevSnap.enemies.some((e) => e.isBoss) &&
                   latestSnapshotRef.current.enemies.some((e) => e.isBoss);
-                if (bossJustArrived) playBossRoarSound();
+                if (bossJustArrived) {
+                  playBossRoarSound();
+                  vibrate([50, 50, 50]);
+                }
               }
             }
             extrapolateAlly(s, dt);
@@ -2326,6 +2415,10 @@ export default function FighterGame() {
           // above (for the pickup-sound diff) before this object is built,
           // so this local copy staying 0 is harmless.
           rapidFireUntil: 0,
+          // Combo bookkeeping is also host-simulation-only -- the ally never
+          // reads these, they're just here to satisfy the Player type.
+          comboStreak: 0,
+          lastKillAt: -999,
         };
       });
       s.enemies = snap.enemies.map((ne) => ({
@@ -2724,6 +2817,7 @@ export default function FighterGame() {
         setBossBlastReady(true);
         setBossFightActive(true);
         playBossRoarSound();
+        vibrate([50, 50, 50]);
       }
 
       for (const en of s.enemies) {
@@ -2942,6 +3036,7 @@ export default function FighterGame() {
                     spawnExplosion(s.particles, en.x + ox, en.y + oy, ["#ffcf5c", "#ff7a3c", "#ff3b3b", "#8a8f96"], 26, 1.8);
                   }
                   triggerShake(s, 26, 0.9);
+                  vibrate([40, 40, 80]);
                   if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 100;
                   setBossFightActive(false);
                   bossBlastReadyRef.current = false;
@@ -2953,7 +3048,23 @@ export default function FighterGame() {
               deadEnemies.add(en);
               spawnExplosion(s.particles, en.x, en.y, ["#ffcf5c", "#ff7a3c", "#8a8f96"]);
               if (idx >= 0) {
-                scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 10;
+                const killer = s.players[idx];
+                let bonus = 0;
+                if (killer) {
+                  // Consecutive kills within COMBO_WINDOW of each other keep
+                  // the streak alive (and grow the bonus); a gap longer than
+                  // that resets it back to a fresh streak of 1. Only applies
+                  // to regular one-shot kills, not the smart bomb's bulk
+                  // clear -- a single button press shouldn't inflate combo.
+                  killer.comboStreak =
+                    s.elapsed - killer.lastKillAt <= COMBO_WINDOW ? killer.comboStreak + 1 : 1;
+                  killer.lastKillAt = s.elapsed;
+                  bonus = Math.min(killer.comboStreak - 1, COMBO_STREAK_CAP) * COMBO_BONUS_PER_STREAK;
+                  if (killer.comboStreak >= 3 && killer.id === localIdRef.current) {
+                    setComboToast({ streak: killer.comboStreak, bonus });
+                  }
+                }
+                scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 10 + bonus;
                 scored = true;
               }
             }
@@ -3075,6 +3186,7 @@ export default function FighterGame() {
                     spawnExplosion(s.particles, boss.x + ox, boss.y + oy, ["#ffcf5c", "#ff7a3c", "#ff3b3b", "#8a8f96"], 26, 1.8);
                   }
                   triggerShake(s, 26, 0.9);
+                  vibrate([40, 40, 80]);
                   if (idx >= 0) scoresRef.current[idx] = (scoresRef.current[idx] ?? 0) + 100;
                   lifetimeStatsRef.current.kills += 1;
                   lifetimeStatsRef.current.bossKills += 1;
@@ -3170,6 +3282,7 @@ export default function FighterGame() {
               spawnExplosion(s.particles, boss.x + ox, boss.y + oy, ["#ffcf5c", "#ff7a3c", "#ff3b3b", "#8a8f96"], 26, 1.8);
             }
             triggerShake(s, 26, 0.9);
+            vibrate([40, 40, 80]);
             scoresRef.current[0] = (scoresRef.current[0] ?? 0) + 100;
             lifetimeStatsRef.current.kills += 1;
             lifetimeStatsRef.current.bossKills += 1;
@@ -3222,6 +3335,7 @@ export default function FighterGame() {
         if (hitBy) {
           pl.invuln = INVULN_TIME;
           spawnExplosion(s.particles, pl.x, pl.y, ["#8fd3ff", "#ffffff", "#ff7a3c"], 24);
+          vibrate(40);
           setLives((lv) => {
             const next = lv - 1;
             if (next <= 0) {
@@ -3516,6 +3630,24 @@ export default function FighterGame() {
           drawJet(c, en.scale, Math.abs(Math.sin(s.elapsed * 18 + en.phase)), ENEMY_SCHEME);
         }
         c.restore();
+
+        // A small non-color marker for the dodger variant -- tanky/elite
+        // already have a size bump and/or hp bar as a non-color tell, but
+        // dodger (a single-hit enemy, same size as normal) had nothing
+        // besides its recolor filter, which isn't a reliable signal for
+        // colorblind players.
+        if (en.kind === "dodger") {
+          c.save();
+          c.translate(en.x, en.y - ENEMY_RADIUS * en.scale - 8);
+          c.textAlign = "center";
+          c.textBaseline = "middle";
+          c.font = "900 10px sans-serif";
+          c.fillStyle = "rgba(0,0,0,0.55)";
+          c.fillText("↔", 0.5, 0.5);
+          c.fillStyle = "#ffffff";
+          c.fillText("↔", 0, 0);
+          c.restore();
+        }
 
         // A small hp bar for any multi-hit regular enemy (tanky/elite), not
         // just the boss -- otherwise a hit that doesn't kill it looks like
@@ -3879,6 +4011,15 @@ export default function FighterGame() {
           >
             {musicMuted ? "🔇" : "🔊"}
           </button>
+          <button
+            onClick={() => setLowGraphics((v) => !v)}
+            aria-label={lowGraphics ? "Switch to normal graphics" : "Switch to low graphics (better performance)"}
+            className={`pointer-events-auto rounded-lg px-2.5 py-1.5 text-lg leading-none backdrop-blur-sm active:scale-95 transition-transform ${
+              lowGraphics ? "bg-emerald-600/60" : "bg-black/35"
+            }`}
+          >
+            {lowGraphics ? "⚡" : "🖼️"}
+          </button>
         </div>
       </div>
 
@@ -3897,6 +4038,16 @@ export default function FighterGame() {
             <span className="text-2xl leading-none">💥</span>
             <span className="text-[9px] font-extrabold uppercase tracking-wide text-white">Blast</span>
           </button>
+        </div>
+      )}
+
+      {comboToast && (
+        <div className="pointer-events-none absolute inset-x-0 top-16 z-50 flex justify-center font-sans">
+          <div className="rounded-full border border-orange-400/50 bg-black/80 px-3 py-1 shadow-lg shadow-black/40">
+            <span className="text-sm font-extrabold text-orange-300">
+              🔥 Combo x{comboToast.streak}! +{comboToast.bonus}
+            </span>
+          </div>
         </div>
       )}
 
@@ -3955,6 +4106,42 @@ export default function FighterGame() {
               Send
             </button>
           </div>
+        </div>
+      )}
+
+      {showTutorial && status === "ready" && (
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-black/90 px-6 text-center text-white font-sans">
+          <h2 className="text-2xl font-extrabold tracking-tight">Welcome, Pilot!</h2>
+          <div className="flex w-full max-w-xs flex-col gap-2.5 text-left">
+            <div className="flex items-center gap-3 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5">
+              <span className="text-2xl leading-none">🕹️</span>
+              <p className="text-sm text-white/80">
+                Drag anywhere on screen to steer — no need to touch your plane directly.
+              </p>
+            </div>
+            <div className="flex items-center gap-3 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5">
+              <span className="text-2xl leading-none">🔫</span>
+              <p className="text-sm text-white/80">Your guns fire automatically — just focus on flying and dodging.</p>
+            </div>
+            <div className="flex items-center gap-3 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5">
+              <span className="text-2xl leading-none">🛡️⚡💥</span>
+              <p className="text-sm text-white/80">
+                Shield heals the team, the bolt is rapid fire, and the burst is a smart bomb that clears the screen.
+              </p>
+            </div>
+            <div className="flex items-center gap-3 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5">
+              <span className="text-2xl leading-none">👹</span>
+              <p className="text-sm text-white/80">
+                A boss shows up near the end of each level — tap the 💥 Boss Blast button for a big hit on it.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={dismissTutorial}
+            className="mt-1 rounded-full bg-blue-600 px-8 py-3 text-base font-bold shadow-lg shadow-blue-900/40 active:scale-95 transition-transform"
+          >
+            Got it, let&apos;s fly!
+          </button>
         </div>
       )}
 

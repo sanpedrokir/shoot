@@ -21,6 +21,20 @@ export function primeAudioContext() {
   getContext();
 }
 
+// Haptic pulse for a handful of the game's biggest moments (getting hit, the
+// boss arriving/dying, firing Boss Blast, unlocking an achievement) -- not
+// on every routine kill/pickup, which at this game's pace would just be
+// constant buzzing rather than useful feedback. navigator.vibrate is
+// unsupported on iOS Safari and simply undefined there, so this silently
+// no-ops instead of needing its own feature-detection at every call site.
+export function vibrate(pattern: number | number[]) {
+  try {
+    navigator.vibrate?.(pattern);
+  } catch {
+    // Haptics are a nice-to-have — never let it block gameplay.
+  }
+}
+
 // A quick filtered-noise "swish" with a downward frequency sweep — reads as
 // a page turning rather than a generic UI click. Called directly from a
 // click handler, so the AudioContext creation/resume above rides the same

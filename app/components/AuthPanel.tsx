@@ -72,6 +72,7 @@ function AuthPanel(
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [top, setTop] = useState<LeaderboardTop | null>(null);
+  const [myRank, setMyRank] = useState<number | null>(null);
   const [leaderboardChecked, setLeaderboardChecked] = useState(false);
   const [showAvatarPicker, setShowAvatarPicker] = useState(false);
   const [avatarSaving, setAvatarSaving] = useState(false);
@@ -96,8 +97,9 @@ function AuthPanel(
   useEffect(() => {
     fetch("/api/leaderboard", { cache: "no-store" })
       .then((r) => r.json())
-      .then((data: { top: LeaderboardTop | null }) => {
+      .then((data: { top: LeaderboardTop | null; myRank: number | null }) => {
         setTop(data.top);
+        setMyRank(data.myRank);
         onTopChange?.(data.top);
       })
       .catch(() => {})
@@ -264,6 +266,11 @@ function AuthPanel(
               className="h-6 w-6 rounded-full ring-1 ring-white/30"
             />
             <span className="font-semibold text-white">{user.nickname}</span>
+            {myRank != null && (
+              <span className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-bold text-white/80">
+                Rank #{myRank}
+              </span>
+            )}
             <button
               onClick={() => setShowAvatarPicker((v) => !v)}
               aria-label="Avatar settings"
