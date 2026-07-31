@@ -371,19 +371,23 @@ const LOCATION_PALETTES: LocationPalette[] = [
   { sky: ["#0a0508", "#22101a", "#3a1c2c", "#522a3e"], nebulaTint: "220,130,170", planetCore: "#ffe0ec", planetEdge: "#522a3e" },
 ];
 
-// WWII edition's daytime sky palettes -- whitish/grey nebulaTint values so
-// the existing nebula-glow draw code reads as soft clouds with no new
-// drawing code, and drab planetCore/planetEdge (horizon silhouette + roadmap
-// hex glow) instead of alien-planet colors.
+// WWII edition always reads as a clear daytime sky -- every entry goes
+// saturated blue at the zenith (sky[0], top of the gradient) down to a pale
+// hazy blue near the horizon (sky[3]), never dark/grey/stormy, so it's
+// unmistakably distinct from Space's black-at-the-top palettes at a glance.
+// Near-white nebulaTint values let the existing nebula-glow draw code read
+// as soft clouds with no new drawing code, and green/khaki planetCore/
+// planetEdge (horizon silhouette + roadmap hex glow) stand in for
+// fields/hills instead of alien-planet colors.
 const WWII_PALETTES: LocationPalette[] = [
-  { sky: ["#1a2a3d", "#3a5a80", "#7aa8cc", "#bcdcf0"], nebulaTint: "255,255,255", planetCore: "#e8ede8", planetEdge: "#3a4a3a" },
-  { sky: ["#2a2e30", "#4a5054", "#7a8288", "#a8b0b4"], nebulaTint: "220,225,228", planetCore: "#d8dcd8", planetEdge: "#44403a" },
-  { sky: ["#3a2410", "#6a3e18", "#a86830", "#e8a860"], nebulaTint: "255,235,200", planetCore: "#f0d8b0", planetEdge: "#4a3018" },
-  { sky: ["#242828", "#3a4440", "#5c6c60", "#8ca090"], nebulaTint: "210,220,210", planetCore: "#d0d8c8", planetEdge: "#2c3428" },
-  { sky: ["#3a2c1c", "#6a4c28", "#a87c40", "#d8b878"], nebulaTint: "235,220,190", planetCore: "#e8d8b8", planetEdge: "#4a3a20" },
-  { sky: ["#182430", "#2c4258", "#4c6c88", "#7ea0c0"], nebulaTint: "230,238,245", planetCore: "#dce6ec", planetEdge: "#28343e" },
-  { sky: ["#302020", "#5a3428", "#8a5838", "#c08858"], nebulaTint: "245,220,195", planetCore: "#e8c8a0", planetEdge: "#3e281a" },
-  { sky: ["#20242a", "#3c444c", "#606c74", "#94a4a8"], nebulaTint: "225,230,230", planetCore: "#d4dcdc", planetEdge: "#2a3234" },
+  { sky: ["#1a5c9e", "#2f7ac4", "#5fa0dd", "#bfe0f5"], nebulaTint: "255,255,255", planetCore: "#e8ede8", planetEdge: "#3a4a3a" },
+  { sky: ["#123a70", "#1f5c9c", "#4f8ec8", "#a8d0ec"], nebulaTint: "245,250,255", planetCore: "#d8dcd8", planetEdge: "#3c4838" },
+  { sky: ["#1e5488", "#3878ac", "#7aa8d0", "#f0dca8"], nebulaTint: "255,248,235", planetCore: "#f0d8b0", planetEdge: "#4a4018" },
+  { sky: ["#0e5090", "#1f78bc", "#5aa8dc", "#c8ecf8"], nebulaTint: "255,255,255", planetCore: "#d0d8c8", planetEdge: "#2c4428" },
+  { sky: ["#164a80", "#2c6cac", "#68a4d4", "#d0eaf8"], nebulaTint: "250,252,255", planetCore: "#e8d8b8", planetEdge: "#4a3a20" },
+  { sky: ["#1c3c68", "#325c94", "#6c94c0", "#cce4f0"], nebulaTint: "235,242,250", planetCore: "#dce6ec", planetEdge: "#283e3e" },
+  { sky: ["#205088", "#3a74ac", "#7cacd6", "#fbe6b0"], nebulaTint: "255,250,240", planetCore: "#e8c8a0", planetEdge: "#4a3818" },
+  { sky: ["#144878", "#2868a0", "#5c9cd0", "#d4ecf8"], nebulaTint: "240,246,255", planetCore: "#d4dcdc", planetEdge: "#324838" },
 ];
 
 function palettesForTheme(theme: GameTheme): LocationPalette[] {
