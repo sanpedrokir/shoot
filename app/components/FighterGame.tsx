@@ -660,7 +660,7 @@ function makeInitialState(
     locationTheme,
     baseFireInterval: perks.baseFireInterval * runPerks.fireRateMult,
     spawnTimer: 0.6,
-    shieldTimer: 2 + Math.random() * 2,
+    shieldTimer: 4 + Math.random() * 3,
     rapidFireTimer: 12 + Math.random() * 6,
     smartBombTimer: 22 + Math.random() * 10,
     elapsed: 0,
@@ -2917,7 +2917,7 @@ export default function FighterGame() {
       // the run goes, so recovery keeps pace with the growing pressure.
       s.shieldTimer -= dt;
       if (s.shieldTimer <= 0) {
-        s.shieldTimer = (2 + Math.random() * 2.5) / shieldRateMultiplier(s.elapsed);
+        s.shieldTimer = (4 + Math.random() * 3.5) / shieldRateMultiplier(s.elapsed);
         s.shields.push({
           x: 24 + Math.random() * (s.width - 48),
           y: -20,
