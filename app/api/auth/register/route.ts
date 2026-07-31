@@ -18,14 +18,15 @@ export async function POST(request: NextRequest) {
   }
 
   const highScore = sanitizeProgress(body?.localHighScore, 0);
+  const wwiiHighScore = sanitizeProgress(body?.localWwiiHighScore, 0);
   const maxLevel = Math.max(1, sanitizeProgress(body?.localMaxLevel, 1));
   const id = crypto.randomUUID();
   const passwordHash = hashPassword(password);
 
   try {
     await sql`
-      INSERT INTO users (id, nickname, password_hash, high_score, max_level)
-      VALUES (${id}, ${nickname}, ${passwordHash}, ${highScore}, ${maxLevel})
+      INSERT INTO users (id, nickname, password_hash, high_score, wwii_high_score, max_level)
+      VALUES (${id}, ${nickname}, ${passwordHash}, ${highScore}, ${wwiiHighScore}, ${maxLevel})
     `;
   } catch (err) {
     if ((err as { code?: string }).code === "23505") {
@@ -35,5 +36,5 @@ export async function POST(request: NextRequest) {
   }
 
   await setSessionCookie(id);
-  return NextResponse.json({ nickname, highScore, maxLevel, avatar: null });
+  return NextResponse.json({ nickname, highScore, wwiiHighScore, maxLevel, avatar: null });
 }

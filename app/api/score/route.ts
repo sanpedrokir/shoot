@@ -9,6 +9,7 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null);
   const score = body?.score;
   const level = body?.level;
+  const wwii = body?.mode === "wwii";
   if (typeof score !== "number" || !Number.isFinite(score) || score < 0) {
     return NextResponse.json({ error: "Invalid score." }, { status: 400 });
   }
@@ -16,13 +17,21 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid level." }, { status: 400 });
   }
 
-  const updated = await sql`
-    UPDATE users
-    SET high_score = GREATEST(high_score, ${Math.floor(score)}),
-        max_level = GREATEST(max_level, ${Math.floor(level)})
-    WHERE id = ${user.id}
-    RETURNING high_score, max_level
-  `;
-  const row = updated[0] as { high_score: number; max_level: number };
-  return NextResponse.json({ highScore: row.high_score, maxLevel: row.max_level });
+  const updated = wwii
+    ? await sql`
+        UPDATE users
+        SET wwii_high_score = GREATEST(wwii_high_score, ${Math.floor(score)}),
+            max_level = GREATEST(max_level, ${Math.floor(level)})
+        WHERE id = ${user.id}
+        RETURNING high_score, wwii_high_score, max_level
+      `
+    : await sql`
+        UPDATE users
+        SET high_score = GREATEST(high_score, ${Math.floor(score)}),
+            max_level = GREATEST(max_level, ${Math.floor(level)})
+        WHERE id = ${user.id}
+        RETURNING high_score, wwii_high_score, max_level
+      `;
+  const row = updated[0] as { high_score: number; wwii_high_score: number; max_level: number };
+  return NextResponse.json({ highScore: row.high_score, wwiiHighScore: row.wwii_high_score, maxLevel: row.max_level });
 }

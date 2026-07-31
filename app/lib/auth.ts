@@ -55,6 +55,7 @@ export interface SessionUser {
   id: string;
   nickname: string;
   highScore: number;
+  wwiiHighScore: number;
   maxLevel: number;
   avatar: string | null;
 }
@@ -65,12 +66,26 @@ export async function getSessionUser(): Promise<SessionUser | null> {
   if (!token) return null;
   const userId = verifySession(token);
   if (!userId) return null;
-  const rows = await sql`SELECT id, nickname, high_score, max_level, avatar FROM users WHERE id = ${userId}`;
+  const rows = await sql`SELECT id, nickname, high_score, wwii_high_score, max_level, avatar FROM users WHERE id = ${userId}`;
   const row = rows[0] as
-    | { id: string; nickname: string; high_score: number; max_level: number; avatar: string | null }
+    | {
+        id: string;
+        nickname: string;
+        high_score: number;
+        wwii_high_score: number;
+        max_level: number;
+        avatar: string | null;
+      }
     | undefined;
   if (!row) return null;
-  return { id: row.id, nickname: row.nickname, highScore: row.high_score, maxLevel: row.max_level, avatar: row.avatar };
+  return {
+    id: row.id,
+    nickname: row.nickname,
+    highScore: row.high_score,
+    wwiiHighScore: row.wwii_high_score,
+    maxLevel: row.max_level,
+    avatar: row.avatar,
+  };
 }
 
 export async function setSessionCookie(userId: string) {

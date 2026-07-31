@@ -12,7 +12,7 @@ export async function POST(request: NextRequest) {
   }
 
   const rows = await sql`
-    SELECT id, nickname, password_hash, high_score, max_level, avatar FROM users
+    SELECT id, nickname, password_hash, high_score, wwii_high_score, max_level, avatar FROM users
     WHERE LOWER(nickname) = LOWER(${nickname})
   `;
   const row = rows[0] as
@@ -21,6 +21,7 @@ export async function POST(request: NextRequest) {
         nickname: string;
         password_hash: string;
         high_score: number;
+        wwii_high_score: number;
         max_level: number;
         avatar: string | null;
       }
@@ -31,23 +32,27 @@ export async function POST(request: NextRequest) {
   }
 
   let highScore = row.high_score;
+  let wwiiHighScore = row.wwii_high_score;
   let maxLevel = row.max_level;
-  const { localHighScore, localMaxLevel } = body;
+  const { localHighScore, localWwiiHighScore, localMaxLevel } = body;
 
-  if (typeof localHighScore === "number" || typeof localMaxLevel === "number") {
+  if (typeof localHighScore === "number" || typeof localWwiiHighScore === "number" || typeof localMaxLevel === "number") {
     const candidateHighScore = sanitizeProgress(localHighScore, row.high_score);
+    const candidateWwiiHighScore = sanitizeProgress(localWwiiHighScore, row.wwii_high_score);
     const candidateMaxLevel = sanitizeProgress(localMaxLevel, row.max_level);
     const updated = await sql`
       UPDATE users
       SET high_score = GREATEST(high_score, ${candidateHighScore}),
+          wwii_high_score = GREATEST(wwii_high_score, ${candidateWwiiHighScore}),
           max_level = GREATEST(max_level, ${candidateMaxLevel})
       WHERE id = ${row.id}
-      RETURNING high_score, max_level
+      RETURNING high_score, wwii_high_score, max_level
     `;
     highScore = updated[0].high_score;
+    wwiiHighScore = updated[0].wwii_high_score;
     maxLevel = updated[0].max_level;
   }
 
   await setSessionCookie(row.id);
-  return NextResponse.json({ nickname: row.nickname, highScore, maxLevel, avatar: row.avatar });
+  return NextResponse.json({ nickname: row.nickname, highScore, wwiiHighScore, maxLevel, avatar: row.avatar });
 }
