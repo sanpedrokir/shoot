@@ -81,15 +81,9 @@ export interface BossBlastMessage {
   id: string;
 }
 
-// The two selectable visual/leaderboard skins for a run -- chosen on the
-// menu before Start, then relayed host->ally via StartMessage since (unlike
-// locationTheme) it isn't derivable from `level` alone.
-export type GameTheme = "space" | "wwii";
-
 export interface StartMessage {
   level: number;
   playerIds: string[];
-  gameTheme: GameTheme;
 }
 
 export interface NetPlayer {

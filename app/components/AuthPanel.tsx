@@ -2,7 +2,6 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useState, type Ref } from "react";
 import { AVATAR_OPTIONS, avatarSrcFor } from "../lib/avatars";
-import type { GameTheme } from "../lib/coop";
 
 export interface AuthPanelHandle {
   logout: () => void;
@@ -11,7 +10,6 @@ export interface AuthPanelHandle {
 export interface AuthUser {
   nickname: string;
   highScore: number;
-  wwiiHighScore: number;
   maxLevel: number;
   avatar: string | null;
 }
@@ -25,11 +23,6 @@ export interface LeaderboardTop {
 interface AuthPanelProps {
   onUserChange: (user: AuthUser | null) => void;
   refreshLeaderboardKey: number;
-  // Which leaderboard/local-progress column this panel currently reflects --
-  // switching it re-fetches the top/rank for that mode (see the leaderboard
-  // effect below). Named gameTheme, not mode, to avoid colliding with this
-  // component's own login/register `mode` state.
-  gameTheme: GameTheme;
   onTopChange?: (top: LeaderboardTop | null) => void;
   // Fires whenever there's nickname/password text sitting unsubmitted (and
   // the player isn't logged in) — the parent uses this to hold off on
@@ -45,22 +38,20 @@ interface AuthPanelProps {
 // which is how a brand-new account could end up "starting" at whatever
 // level a previous account on the same device had reached: registering
 // read this stale, always-1 key instead of the real local progress.
-function readLocalProgress(): { highScore: number; wwiiHighScore: number; maxLevel: number } {
-  if (typeof window === "undefined") return { highScore: 0, wwiiHighScore: 0, maxLevel: 1 };
+function readLocalProgress(): { highScore: number; maxLevel: number } {
+  if (typeof window === "undefined") return { highScore: 0, maxLevel: 1 };
   try {
     const highScore = parseInt(window.localStorage.getItem("skyfighter-best") ?? "0", 10) || 0;
-    const wwiiHighScore = parseInt(window.localStorage.getItem("skyfighter-wwii-best") ?? "0", 10) || 0;
     const maxLevel = parseInt(window.localStorage.getItem("skyfighter-unlocked-level") ?? "1", 10) || 1;
-    return { highScore, wwiiHighScore, maxLevel };
+    return { highScore, maxLevel };
   } catch {
-    return { highScore: 0, wwiiHighScore: 0, maxLevel: 1 };
+    return { highScore: 0, maxLevel: 1 };
   }
 }
 
-function storeLocalProgress(highScore: number, wwiiHighScore: number, maxLevel: number) {
+function storeLocalProgress(highScore: number, maxLevel: number) {
   try {
     window.localStorage.setItem("skyfighter-best", String(highScore));
-    window.localStorage.setItem("skyfighter-wwii-best", String(wwiiHighScore));
     window.localStorage.setItem("skyfighter-unlocked-level", String(maxLevel));
   } catch {
     // ignore
@@ -70,7 +61,7 @@ function storeLocalProgress(highScore: number, wwiiHighScore: number, maxLevel: 
 type Mode = "login" | "register";
 
 function AuthPanel(
-  { onUserChange, refreshLeaderboardKey, gameTheme, onTopChange, onPendingAuthChange }: AuthPanelProps,
+  { onUserChange, refreshLeaderboardKey, onTopChange, onPendingAuthChange }: AuthPanelProps,
   ref: Ref<AuthPanelHandle>
 ) {
   const [user, setUser] = useState<AuthUser | null>(null);
@@ -104,7 +95,7 @@ function AuthPanel(
   }, []);
 
   useEffect(() => {
-    fetch(`/api/leaderboard?mode=${gameTheme}`, { cache: "no-store" })
+    fetch("/api/leaderboard", { cache: "no-store" })
       .then((r) => r.json())
       .then((data: { top: LeaderboardTop | null; myRank: number | null }) => {
         setTop(data.top);
@@ -114,9 +105,9 @@ function AuthPanel(
       .catch(() => {})
       .finally(() => setLeaderboardChecked(true));
     // onTopChange is a fresh closure each render; only re-fetch when the
-    // parent explicitly bumps refreshLeaderboardKey or switches mode.
+    // parent explicitly bumps refreshLeaderboardKey.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshLeaderboardKey, gameTheme]);
+  }, [refreshLeaderboardKey]);
 
   useEffect(() => {
     onPendingAuthChange?.(!user && (nickname.trim().length > 0 || password.length > 0));
@@ -144,7 +135,6 @@ function AuthPanel(
           nickname: nickname.trim(),
           password,
           localHighScore: local.highScore,
-          localWwiiHighScore: local.wwiiHighScore,
           localMaxLevel: local.maxLevel,
         }),
       });
@@ -173,7 +163,6 @@ function AuthPanel(
       const nextUser: AuthUser = {
         nickname: data.nickname,
         highScore: data.highScore,
-        wwiiHighScore: data.wwiiHighScore,
         maxLevel: data.maxLevel,
         avatar,
       };
@@ -181,7 +170,7 @@ function AuthPanel(
       onUserChange(nextUser);
       setPassword("");
       setSignupStep("form");
-      storeLocalProgress(nextUser.highScore, nextUser.wwiiHighScore, nextUser.maxLevel);
+      storeLocalProgress(nextUser.highScore, nextUser.maxLevel);
     } catch {
       setError("Network error. Try again.");
       setSignupStep("form");

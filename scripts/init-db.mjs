@@ -19,10 +19,6 @@ await sql`
 `;
 
 await sql`
-  ALTER TABLE users ADD COLUMN IF NOT EXISTS wwii_high_score integer NOT NULL DEFAULT 0
-`;
-
-await sql`
   CREATE UNIQUE INDEX IF NOT EXISTS users_nickname_lower_idx ON users (LOWER(nickname))
 `;
 

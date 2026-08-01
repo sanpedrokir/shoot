@@ -14,7 +14,6 @@ import {
   type ChatMessage,
   type UltimateMessage,
   type BossBlastMessage,
-  type GameTheme,
 } from "../lib/coop";
 import { createMusicPlayer, type MusicPlayer } from "../lib/musicPlayer";
 import {
@@ -133,10 +132,6 @@ interface GameState {
   // Not networked — derived purely from `level`, which is already synced,
   // so the ally computes the identical theme locally.
   locationTheme: LocationTheme;
-  // Which skin (Space/WWII) this run uses -- set once at init from the
-  // menu's toggle (host relays its choice to the ally via StartMessage) and
-  // never changes mid-run.
-  gameTheme: GameTheme;
   // Host/solo-simulation-only (see perksForLocation) — the ally never runs
   // the fire loop itself, so this never needs to be networked. Already
   // folded in here is any Quick Reload perk multiplier chosen on the
@@ -324,29 +319,11 @@ const LOCATION_TAILS = [
   "Sigma", "Epsilon", "X", "Core", "Null", "III",
 ];
 
-// WWII edition's own location-name word pools -- deliberately generic
-// geographic/military words rather than real historic battles/places.
-const WWII_PREFIXES = [
-  "Coastal", "Channel", "Highland", "Northern", "Southern", "Desert", "Alpine",
-  "Arctic", "Delta", "Forward", "Lowland", "Eastern", "Western", "Valley", "Ridge",
-];
-const WWII_ROOTS = [
-  "Front", "Airfield", "Corridor", "Strait", "Ridge", "Bay", "Valley", "Sector",
-  "Crossing", "Perimeter", "Flatlands", "Marsh", "Harbor", "Highlands",
-];
-const WWII_TAILS = [
-  "Redoubt", "Point", "Watch", "Line", "Garrison", "Outpost", "Station",
-  "Command", "Hold", "Approach",
-];
-
-function getLocationName(index: number, theme: GameTheme = "space"): string {
+function getLocationName(index: number): string {
   const rand = mulberry32(index * 7919 + 13);
-  const prefixes = theme === "wwii" ? WWII_PREFIXES : LOCATION_PREFIXES;
-  const roots = theme === "wwii" ? WWII_ROOTS : LOCATION_ROOTS;
-  const tails = theme === "wwii" ? WWII_TAILS : LOCATION_TAILS;
-  const p = prefixes[Math.floor(rand() * prefixes.length)];
-  const r = roots[Math.floor(rand() * roots.length)];
-  const t = tails[Math.floor(rand() * tails.length)];
+  const p = LOCATION_PREFIXES[Math.floor(rand() * LOCATION_PREFIXES.length)];
+  const r = LOCATION_ROOTS[Math.floor(rand() * LOCATION_ROOTS.length)];
+  const t = LOCATION_TAILS[Math.floor(rand() * LOCATION_TAILS.length)];
   return `${p} ${r} ${t}`;
 }
 
@@ -371,29 +348,6 @@ const LOCATION_PALETTES: LocationPalette[] = [
   { sky: ["#0a0508", "#22101a", "#3a1c2c", "#522a3e"], nebulaTint: "220,130,170", planetCore: "#ffe0ec", planetEdge: "#522a3e" },
 ];
 
-// WWII edition always reads as a clear daytime sky -- every entry goes
-// saturated blue at the zenith (sky[0], top of the gradient) down to a pale
-// hazy blue near the horizon (sky[3]), never dark/grey/stormy, so it's
-// unmistakably distinct from Space's black-at-the-top palettes at a glance.
-// Near-white nebulaTint values let the existing nebula-glow draw code read
-// as soft clouds with no new drawing code, and green/khaki planetCore/
-// planetEdge (horizon silhouette + roadmap hex glow) stand in for
-// fields/hills instead of alien-planet colors.
-const WWII_PALETTES: LocationPalette[] = [
-  { sky: ["#1a5c9e", "#2f7ac4", "#5fa0dd", "#bfe0f5"], nebulaTint: "255,255,255", planetCore: "#e8ede8", planetEdge: "#3a4a3a" },
-  { sky: ["#123a70", "#1f5c9c", "#4f8ec8", "#a8d0ec"], nebulaTint: "245,250,255", planetCore: "#d8dcd8", planetEdge: "#3c4838" },
-  { sky: ["#1e5488", "#3878ac", "#7aa8d0", "#f0dca8"], nebulaTint: "255,248,235", planetCore: "#f0d8b0", planetEdge: "#4a4018" },
-  { sky: ["#0e5090", "#1f78bc", "#5aa8dc", "#c8ecf8"], nebulaTint: "255,255,255", planetCore: "#d0d8c8", planetEdge: "#2c4428" },
-  { sky: ["#164a80", "#2c6cac", "#68a4d4", "#d0eaf8"], nebulaTint: "250,252,255", planetCore: "#e8d8b8", planetEdge: "#4a3a20" },
-  { sky: ["#1c3c68", "#325c94", "#6c94c0", "#cce4f0"], nebulaTint: "235,242,250", planetCore: "#dce6ec", planetEdge: "#283e3e" },
-  { sky: ["#205088", "#3a74ac", "#7cacd6", "#fbe6b0"], nebulaTint: "255,250,240", planetCore: "#e8c8a0", planetEdge: "#4a3818" },
-  { sky: ["#144878", "#2868a0", "#5c9cd0", "#d4ecf8"], nebulaTint: "240,246,255", planetCore: "#d4dcdc", planetEdge: "#324838" },
-];
-
-function palettesForTheme(theme: GameTheme): LocationPalette[] {
-  return theme === "wwii" ? WWII_PALETTES : LOCATION_PALETTES;
-}
-
 interface LocationTheme {
   index: number;
   name: string;
@@ -405,10 +359,9 @@ interface LocationTheme {
   horizon: { x: number; y: number }[];
 }
 
-function getLocationTheme(index: number, width: number, height: number, theme: GameTheme = "space"): LocationTheme {
+function getLocationTheme(index: number, width: number, height: number): LocationTheme {
   const rand = mulberry32(index * 104729 + 31);
-  const palettes = palettesForTheme(theme);
-  const palette = palettes[index % palettes.length];
+  const palette = LOCATION_PALETTES[index % LOCATION_PALETTES.length];
 
   const planet = {
     x: rand() < 0.5 ? width * (0.08 + rand() * 0.12) : width * (0.8 + rand() * 0.12),
@@ -432,7 +385,7 @@ function getLocationTheme(index: number, width: number, height: number, theme: G
     horizon.push({ x, y });
   }
 
-  return { index, name: getLocationName(index, theme), palette, planet, horizon };
+  return { index, name: getLocationName(index), palette, planet, horizon };
 }
 
 // Auto-equip loadout: every 2 locations survived deeper unlocks a tougher
@@ -655,8 +608,7 @@ function makeInitialState(
   height: number,
   level: number,
   playerIds: string[],
-  runPerks: RunPerks,
-  gameTheme: GameTheme
+  runPerks: RunPerks
 ): GameState {
   // Size, speed, and brightness all driven off the same random "depth" so
   // they stay consistent with each other — a star that's bigger and
@@ -673,7 +625,7 @@ function makeInitialState(
       twinklePhase: Math.random() * Math.PI * 2,
     };
   });
-  const locationTheme = getLocationTheme(locationIndexForLevel(level), width, height, gameTheme);
+  const locationTheme = getLocationTheme(locationIndexForLevel(level), width, height);
   const perks = perksForLocation(locationTheme.index);
   // A few tonal variations on the location's own tint, rather than
   // unrelated random colors, so the nebula layer reads as part of the same
@@ -706,7 +658,6 @@ function makeInitialState(
     stars,
     nebulae,
     locationTheme,
-    gameTheme,
     baseFireInterval: perks.baseFireInterval * runPerks.fireRateMult,
     spawnTimer: 0.6,
     shieldTimer: 4 + Math.random() * 3,
@@ -1394,44 +1345,6 @@ const ENEMY_SCHEME = {
   accent: "#f0f0f0",
 };
 
-// WWII edition's own vector-fallback palette -- olive-drab/khaki/gunmetal
-// rather than the sci-fi blue/green/amber/red above, used whenever the WWII
-// sprite art (see PLANE_SPRITES.wwiiBlue/wwiiRed below) hasn't loaded yet.
-const WWII_PLAYER_SCHEME = {
-  bodyTop: "#8a9a6b",
-  bodyBottom: "#3e4a2a",
-  stroke: "#1c2312",
-  canopyTop: "#cfe0d8",
-  canopyBottom: "#243b2e",
-  roundelOuter: "#c8322a",
-  roundelInner: "#f0e8d0",
-  accent: "#f0e8d0",
-};
-
-const WWII_ALLY_SCHEME = {
-  bodyTop: "#d9c48a",
-  bodyBottom: "#8a6f3a",
-  stroke: "#2e2410",
-  canopyTop: "#e8dcb8",
-  canopyBottom: "#4a3a18",
-  roundelOuter: "#c8322a",
-  roundelInner: "#f0e8d0",
-  accent: "#3e4a2a",
-};
-
-const WWII_ENEMY_SCHEME = {
-  bodyTop: "#8f9498",
-  bodyBottom: "#3a3d40",
-  stroke: "#141516",
-  canopyTop: "#c9d4d8",
-  canopyBottom: "#2a2d2f",
-  roundelOuter: "#1c1c1c",
-  roundelInner: "#e0342a",
-  accent: "#e0342a",
-};
-
-const WWII_PLAYER_SCHEMES = [WWII_PLAYER_SCHEME, WWII_ALLY_SCHEME, WWII_ALLY_SCHEME];
-
 // Toggle for the illustrated plane sprites vs. the original hand-drawn
 // vector jets above -- flip this back to false to instantly revert to the
 // vector look (the vector code is left fully intact for exactly that).
@@ -1439,17 +1352,11 @@ const USE_PLANE_SPRITES = true;
 // Sprite art is nose-up already (matches drawJet's own local-space
 // convention), so the same rotation the vector path uses for enemies
 // (rotate(PI) to flip nose-down) and for player bank still applies as-is.
-// The wwii* entries don't exist yet -- drawJetSprite treats a not-yet-loaded
-// image as "no sprite" and falls back to the vector jet above (using the
-// WWII_* schemes), so WWII mode works today and upgrades automatically the
-// moment matching webp files are dropped in at these paths.
 const PLANE_SPRITES = {
   blue: "/sprites/blueplane.webp",
   green: "/sprites/greenplane.webp",
   red: "/sprites/redplane.webp",
   monster: "/sprites/monsterplane.webp",
-  wwiiBlue: "/sprites/wwii-blueplane.webp",
-  wwiiRed: "/sprites/wwii-redplane.webp",
 };
 // players[] index -> sprite, same mapping PLAYER_SCHEMES uses (index 0 is
 // always the host's plane, index 1 the ally's, regardless of which device
@@ -1462,26 +1369,6 @@ function readStoredBest(): number {
     return parseInt(window.localStorage.getItem("skyfighter-best") ?? "0", 10) || 0;
   } catch {
     return 0;
-  }
-}
-
-function readStoredWwiiBest(): number {
-  if (typeof window === "undefined") return 0;
-  try {
-    return parseInt(window.localStorage.getItem("skyfighter-wwii-best") ?? "0", 10) || 0;
-  } catch {
-    return 0;
-  }
-}
-
-const GAME_THEME_KEY = "skyfighter-theme";
-
-function readStoredGameTheme(): GameTheme {
-  if (typeof window === "undefined") return "space";
-  try {
-    return window.localStorage.getItem(GAME_THEME_KEY) === "wwii" ? "wwii" : "space";
-  } catch {
-    return "space";
   }
 }
 
@@ -1523,7 +1410,6 @@ export default function FighterGame() {
   const lastTimeRef = useRef<number>(0);
   const timerValueRef = useRef<HTMLDivElement | null>(null);
   const lobbyModeRef = useRef<LobbyMode>("solo");
-  const gameThemeRef = useRef<GameTheme>("space");
   const musicPlayerRef = useRef<MusicPlayer | null>(null);
   // Preloaded once on mount so the render loop's drawImage calls never pay a
   // decode cost mid-game -- plain HTMLImageElements are enough here (no
@@ -1673,9 +1559,6 @@ export default function FighterGame() {
   // synced from localStorage in a mount effect below, to avoid a hydration
   // mismatch for returning players whose real best score differs from this.
   const [best, setBest] = useState(0);
-  // WWII edition's own best score, tracked separately from `best` (Space) --
-  // see the leaderboard-mode plumbing in AuthPanel/api/score.
-  const [wwiiBest, setWwiiBest] = useState(0);
   // Highest level ever survived — persisted to localStorage, this is the
   // "frontier" location the Locations screen unlocks up to. soloStartLevel
   // is the level the *next* solo run actually begins at: it defaults to the
@@ -1702,10 +1585,6 @@ export default function FighterGame() {
   const [chatInput, setChatInput] = useState("");
 
   const [lobbyMode, setLobbyMode] = useState<LobbyMode>("solo");
-  // Which visual/leaderboard skin the next run uses -- Space (sci-fi, the
-  // original look) or WWII. Seeded with the SSR-safe default and corrected
-  // from localStorage right after mount, same idiom as `lowGraphics` above.
-  const [gameTheme, setGameTheme] = useState<GameTheme>("space");
   const [netRole, setNetRole] = useState<NetRole>("solo");
   const [roomCode, setRoomCode] = useState("");
   const [joinCodeInput, setJoinCodeInput] = useState("");
@@ -1861,8 +1740,6 @@ export default function FighterGame() {
     // client's first render matches the server's SSR-safe default.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setBest(readStoredBest());
-    setWwiiBest(readStoredWwiiBest());
-    setGameTheme(readStoredGameTheme());
     const u = readStoredUnlockedLevel();
     setUnlockedLevel(u);
     setSoloStartLevel(u);
@@ -1881,15 +1758,6 @@ export default function FighterGame() {
   useEffect(() => {
     lobbyModeRef.current = lobbyMode;
   }, [lobbyMode]);
-
-  useEffect(() => {
-    gameThemeRef.current = gameTheme;
-    try {
-      window.localStorage.setItem(GAME_THEME_KEY, gameTheme);
-    } catch {
-      // ignore
-    }
-  }, [gameTheme]);
 
   useEffect(() => {
     netRoleRef.current = netRole;
@@ -1911,7 +1779,7 @@ export default function FighterGame() {
     setLobbyMode(mode);
   };
 
-  const beginGame = (role: NetRole, playerIds: string[], level: number = 1, theme: GameTheme = gameThemeRef.current) => {
+  const beginGame = (role: NetRole, playerIds: string[], level: number = 1) => {
     netRoleRef.current = role;
     setNetRole(role);
     playerIdsRef.current = playerIds;
@@ -1924,7 +1792,7 @@ export default function FighterGame() {
     const width = el?.clientWidth ?? 360;
     const height = el?.clientHeight ?? 640;
     const runPerks = role === "solo" ? runPerksRef.current : defaultRunPerks();
-    stateRef.current = makeInitialState(width, height, level, playerIds, runPerks, theme);
+    stateRef.current = makeInitialState(width, height, level, playerIds, runPerks);
     setBossFightActive(false);
     bossBlastReadyRef.current = false;
     setBossBlastReady(false);
@@ -2000,12 +1868,8 @@ export default function FighterGame() {
 
   const hostStartOrRestart = () => {
     const ids = [localIdRef.current, ...teammateIds].slice(0, MAX_PLAYERS);
-    channelRef.current?.trigger("client-start", {
-      level: 1,
-      playerIds: ids,
-      gameTheme: gameThemeRef.current,
-    } satisfies StartMessage);
-    beginGame("host", ids, 1, gameThemeRef.current);
+    channelRef.current?.trigger("client-start", { level: 1, playerIds: ids } satisfies StartMessage);
+    beginGame("host", ids);
   };
 
   const joinRoom = (code: string) => {
@@ -2029,7 +1893,7 @@ export default function FighterGame() {
       setConnError("Couldn't join — check the code and try again.");
     });
     channel.bind("client-start", (data: StartMessage) => {
-      beginGame("ally", data.playerIds, 1, data.gameTheme);
+      beginGame("ally", data.playerIds);
     });
     channel.bind("client-state", (data: NetSnapshot) => {
       latestSnapshotRef.current = data;
@@ -2146,24 +2010,20 @@ export default function FighterGame() {
     setUser(u);
     if (u) {
       setBest(u.highScore);
-      setWwiiBest(u.wwiiHighScore);
       setUnlockedLevel(u.maxLevel);
       setSoloStartLevel(u.maxLevel);
       try {
         window.localStorage.setItem("skyfighter-best", String(u.highScore));
-        window.localStorage.setItem("skyfighter-wwii-best", String(u.wwiiHighScore));
         window.localStorage.setItem(UNLOCKED_LEVEL_KEY, String(u.maxLevel));
       } catch {
         // ignore
       }
     } else if (wasLoggedIn) {
       setBest(0);
-      setWwiiBest(0);
       setUnlockedLevel(1);
       setSoloStartLevel(1);
       try {
         window.localStorage.setItem("skyfighter-best", "0");
-        window.localStorage.setItem("skyfighter-wwii-best", "0");
         window.localStorage.setItem(UNLOCKED_LEVEL_KEY, "1");
       } catch {
         // ignore
@@ -2200,14 +2060,7 @@ export default function FighterGame() {
           pl.targetY = pl.y;
         }
       } else {
-        stateRef.current = makeInitialState(
-          width,
-          height,
-          1,
-          [localIdRef.current || "local"],
-          defaultRunPerks(),
-          gameThemeRef.current
-        );
+        stateRef.current = makeInitialState(width, height, 1, [localIdRef.current || "local"], defaultRunPerks());
       }
     };
     resize();
@@ -2541,7 +2394,7 @@ export default function FighterGame() {
       setBossFightActive(snap.enemies.some((en) => en.isBoss));
       const wantLocation = locationIndexForLevel(snap.level);
       if (s.locationTheme.index !== wantLocation) {
-        s.locationTheme = getLocationTheme(wantLocation, s.width, s.height, s.gameTheme);
+        s.locationTheme = getLocationTheme(wantLocation, s.width, s.height);
       }
       s.players = snap.players.map((np) => {
         const targetX = np.x * scaleX;
@@ -2699,31 +2552,6 @@ export default function FighterGame() {
       };
     }
 
-    // Shared by both the game-over and level-complete "save best score" paths
-    // below -- picks the Space or WWII best/localStorage-key/leaderboard
-    // column based on which skin this run used.
-    function submitScore(finalScore: number, level: number, theme: GameTheme) {
-      const setter = theme === "wwii" ? setWwiiBest : setBest;
-      const storageKey = theme === "wwii" ? "skyfighter-wwii-best" : "skyfighter-best";
-      setter((b) => {
-        const nb = Math.max(b, finalScore);
-        try {
-          window.localStorage.setItem(storageKey, String(nb));
-        } catch {
-          // ignore
-        }
-        if (userRef.current) {
-          fetch("/api/score", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(theme === "wwii" ? { score: nb, level, mode: "wwii" } : { score: nb, level }),
-          }).catch(() => {});
-          setRefreshLeaderboardKey((k) => k + 1);
-        }
-        return nb;
-      });
-    }
-
     function update(s: GameState, dt: number) {
       // Shared by the direct team-wipe path and the revive-timeout path
       // below -- both need the exact same "end the run" sequence.
@@ -2731,7 +2559,23 @@ export default function FighterGame() {
         statusRef.current = "gameover";
         setStatus("gameover");
         musicPlayerRef.current?.stop();
-        submitScore(scoreRef.current, s.level, s.gameTheme);
+        setBest((b) => {
+          const nb = Math.max(b, scoreRef.current);
+          try {
+            window.localStorage.setItem("skyfighter-best", String(nb));
+          } catch {
+            // ignore
+          }
+          if (userRef.current) {
+            fetch("/api/score", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ score: nb, level: s.level }),
+            }).catch(() => {});
+            setRefreshLeaderboardKey((k) => k + 1);
+          }
+          return nb;
+        });
       };
 
       s.elapsed += dt;
@@ -3553,9 +3397,7 @@ export default function FighterGame() {
         musicPlayerRef.current?.stop();
         const nextLevel = s.level + 1;
         const crossedLocation = locationIndexForLevel(nextLevel) > locationIndexForLevel(s.level);
-        setJustUnlockedLocation(
-          crossedLocation ? getLocationName(locationIndexForLevel(nextLevel), s.gameTheme) : null
-        );
+        setJustUnlockedLocation(crossedLocation ? getLocationName(locationIndexForLevel(nextLevel)) : null);
         setSoloStartLevel(nextLevel);
         setUnlockedLevel((u) => {
           if (nextLevel <= u) return u;
@@ -3566,15 +3408,31 @@ export default function FighterGame() {
           }
           return nextLevel;
         });
-        // The server's max_level means "highest level unlocked", matching
-        // UNLOCKED_LEVEL_KEY's local semantics -- send nextLevel (the level
-        // this survive just unlocked), not s.level (the one just finished).
-        // Sending s.level here was the bug: it made the server always lag
-        // one level behind local progress, so the next handleUserChange (a
-        // session refresh, another device, even just a reload) would snap
-        // soloStartLevel/unlockedLevel back down to the level the player had
-        // already survived.
-        submitScore(scoreRef.current, nextLevel, s.gameTheme);
+        setBest((b) => {
+          const nb = Math.max(b, scoreRef.current);
+          try {
+            window.localStorage.setItem("skyfighter-best", String(nb));
+          } catch {
+            // ignore
+          }
+          if (userRef.current) {
+            // The server's max_level means "highest level unlocked", matching
+            // UNLOCKED_LEVEL_KEY's local semantics -- send nextLevel (the
+            // level this survive just unlocked), not s.level (the one just
+            // finished). Sending s.level here was the bug: it made the
+            // server always lag one level behind local progress, so the
+            // next handleUserChange (a session refresh, another device,
+            // even just a reload) would snap soloStartLevel/unlockedLevel
+            // back down to the level the player had already survived.
+            fetch("/api/score", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ score: nb, level: nextLevel }),
+            }).catch(() => {});
+            setRefreshLeaderboardKey((k) => k + 1);
+          }
+          return nb;
+        });
       }
     }
 
@@ -3618,16 +3476,12 @@ export default function FighterGame() {
         c.fill();
       }
 
-      // A daytime WWII sky has no starfield -- the update loops above still
-      // run (harmless/cheap), just the draw is skipped.
-      if (s.gameTheme !== "wwii") {
-        c.save();
-        for (const st of s.stars) {
-          const twinkle = 0.7 + 0.3 * Math.sin(st.twinklePhase);
-          drawStar(c, st.x, st.y, st.r, st.opacity * twinkle);
-        }
-        c.restore();
+      c.save();
+      for (const st of s.stars) {
+        const twinkle = 0.7 + 0.3 * Math.sin(st.twinklePhase);
+        drawStar(c, st.x, st.y, st.r, st.opacity * twinkle);
       }
+      c.restore();
 
       // Distant horizon silhouette — a smooth skyline (precomputed once per
       // location, not regenerated per frame) rather than a jagged random
@@ -3771,22 +3625,9 @@ export default function FighterGame() {
               : en.kind === "elite"
                 ? "saturate(1.7) brightness(0.9) contrast(1.3)"
                 : "none";
-        // WWII mode has no separate "monster" boss asset -- the boss's own
-        // aura/scale/HP-bar above already make the reused wwiiRed plane read
-        // as a flagship.
-        const sprite =
-          s.gameTheme === "wwii"
-            ? jetImagesRef.current.wwiiRed
-            : en.isBoss
-              ? jetImagesRef.current.monster
-              : jetImagesRef.current.red;
+        const sprite = en.isBoss ? jetImagesRef.current.monster : jetImagesRef.current.red;
         if (!USE_PLANE_SPRITES || !drawJetSprite(c, sprite, en.scale)) {
-          drawJet(
-            c,
-            en.scale,
-            Math.abs(Math.sin(s.elapsed * 18 + en.phase)),
-            s.gameTheme === "wwii" ? WWII_ENEMY_SCHEME : ENEMY_SCHEME
-          );
+          drawJet(c, en.scale, Math.abs(Math.sin(s.elapsed * 18 + en.phase)), ENEMY_SCHEME);
         }
         c.restore();
 
@@ -3882,21 +3723,9 @@ export default function FighterGame() {
           if (isDowned) c.globalAlpha = 0.45;
           drawJetShadow(c, 1);
           c.rotate(bank);
-          if (s.gameTheme === "wwii") {
-            // No separate WWII ally asset -- tint the shared wwiiBlue sprite
-            // for the second (ally) plane so host/ally stay visually
-            // distinct, mirroring the enemy-kind recolor-via-filter trick
-            // above.
-            c.filter = i === 1 ? "hue-rotate(70deg) saturate(1.3)" : "none";
-            if (!USE_PLANE_SPRITES || !drawJetSprite(c, jetImagesRef.current.wwiiBlue, 1)) {
-              drawJet(c, 1, Math.abs(Math.sin(s.elapsed * 22)), WWII_PLAYER_SCHEMES[i % WWII_PLAYER_SCHEMES.length]);
-            }
-            c.filter = "none";
-          } else {
-            const spriteKey = PLAYER_SPRITE_KEYS[i % PLAYER_SPRITE_KEYS.length];
-            if (!USE_PLANE_SPRITES || !drawJetSprite(c, jetImagesRef.current[spriteKey], 1)) {
-              drawJet(c, 1, Math.abs(Math.sin(s.elapsed * 22)), PLAYER_SCHEMES[i % PLAYER_SCHEMES.length]);
-            }
+          const spriteKey = PLAYER_SPRITE_KEYS[i % PLAYER_SPRITE_KEYS.length];
+          if (!USE_PLANE_SPRITES || !drawJetSprite(c, jetImagesRef.current[spriteKey], 1)) {
+            drawJet(c, 1, Math.abs(Math.sin(s.elapsed * 22)), PLAYER_SCHEMES[i % PLAYER_SCHEMES.length]);
           }
           c.restore();
 
@@ -4033,10 +3862,7 @@ export default function FighterGame() {
   const roadmapPathD = catmullRomPath(
     Array.from({ length: roadmapCount }, (_, k) => roadmapNodeCenter(k))
   );
-  const roadmapPaletteAt = (k: number) => {
-    const palettes = palettesForTheme(gameTheme);
-    return palettes[roadmapIndices[k] % palettes.length];
-  };
+  const roadmapPaletteAt = (k: number) => LOCATION_PALETTES[roadmapIndices[k] % LOCATION_PALETTES.length];
   // Whether location #1 — and so the very start of the endless route — is
   // currently in the visible (windowed) portion of the roadmap.
   const roadmapShowsStart = roadmapIndices[0] === 1;
@@ -4097,7 +3923,7 @@ export default function FighterGame() {
                     Lvl{soloStartLevel}
                   </span>
                   <span className="max-w-[6rem] truncate text-[10px] text-white/50">
-                    {getLocationName(locationIndexForLevel(soloStartLevel), gameTheme)}
+                    {getLocationName(locationIndexForLevel(soloStartLevel))}
                   </span>
                 </div>
               )}
@@ -4117,9 +3943,7 @@ export default function FighterGame() {
         {status !== "ready" && (
           <div className="rounded-lg bg-black/35 px-3 py-1.5 backdrop-blur-sm text-center">
             <div className="text-xs uppercase tracking-wide text-white/60">Best Score</div>
-            <div className="text-lg font-bold tabular-nums leading-tight">
-              {gameTheme === "wwii" ? wwiiBest : best}
-            </div>
+            <div className="text-lg font-bold tabular-nums leading-tight">{best}</div>
           </div>
         )}
         {status !== "ready" && (
@@ -4399,8 +4223,7 @@ export default function FighterGame() {
                   through the route instead of staying one flat color. */}
               {roadmapIndices.map((idx, k) => {
                 const { x, y } = roadmapNodeCenter(k);
-                const themedPalettes = palettesForTheme(gameTheme);
-                const palette = themedPalettes[idx % themedPalettes.length];
+                const palette = LOCATION_PALETTES[idx % LOCATION_PALETTES.length];
                 return (
                   <div
                     key={`halo-${idx}`}
@@ -4469,8 +4292,7 @@ export default function FighterGame() {
               {roadmapIndices.map((idx, k) => {
                 const { x, y } = roadmapNodeCenter(k);
                 const locked = idx > frontierLocation;
-                const themedPalettes = palettesForTheme(gameTheme);
-                const palette = themedPalettes[idx % themedPalettes.length];
+                const palette = LOCATION_PALETTES[idx % LOCATION_PALETTES.length];
                 const startLevel = idx;
                 const isFrontier = idx === frontierLocation;
                 const isSelected = idx === locationIndexForLevel(soloStartLevel);
@@ -4503,11 +4325,7 @@ export default function FighterGame() {
                           startSolo(startLevel);
                         }, 220);
                       }}
-                      aria-label={
-                        locked
-                          ? `${getLocationName(idx, gameTheme)} (locked)`
-                          : `Start at ${getLocationName(idx, gameTheme)}`
-                      }
+                      aria-label={locked ? `${getLocationName(idx)} (locked)` : `Start at ${getLocationName(idx)}`}
                       className={`absolute flex items-center justify-center rounded-full transition-transform duration-200 ${
                         locked ? "opacity-50 grayscale" : "active:scale-95"
                       }`}
@@ -4571,7 +4389,7 @@ export default function FighterGame() {
                       className="absolute w-36 text-center"
                       style={{ left: x, top: y + PATH_NODE_R + 10, transform: "translateX(-50%)" }}
                     >
-                      <div className="truncate text-xs font-bold">{getLocationName(idx, gameTheme)}</div>
+                      <div className="truncate text-xs font-bold">{getLocationName(idx)}</div>
                       <div className="text-[10px] text-white/60">
                         {locked ? `Reach Level ${startLevel}` : `Level ${startLevel}`}
                       </div>
@@ -4612,25 +4430,6 @@ export default function FighterGame() {
               🔊 Tap for Sound
             </button>
           )}
-
-          <div className="flex gap-2 rounded-full bg-white/10 p-1 text-xs">
-            {(
-              [
-                { m: "space", label: "🚀 Space" },
-                { m: "wwii", label: "✈️ WWII" },
-              ] as { m: GameTheme; label: string }[]
-            ).map(({ m, label }) => (
-              <button
-                key={m}
-                onClick={() => setGameTheme(m)}
-                className={`rounded-full px-4 py-1.5 font-semibold transition-colors ${
-                  gameTheme === m ? "bg-red-600 text-white" : "text-white/70"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
 
           <div className="grid w-full max-w-xs grid-cols-3 gap-2.5">
             {(
@@ -4734,17 +4533,12 @@ export default function FighterGame() {
             </div>
           )}
 
-          {(gameTheme === "wwii" ? wwiiBest : best) > 0 && (
-            <p className="text-xs text-white/60">
-              Your Best Score: {gameTheme === "wwii" ? wwiiBest : best}
-            </p>
-          )}
+          {best > 0 && <p className="text-xs text-white/60">Your Best Score: {best}</p>}
 
           <AuthPanel
             ref={authPanelRef}
             onUserChange={handleUserChange}
             refreshLeaderboardKey={refreshLeaderboardKey}
-            gameTheme={gameTheme}
             onTopChange={setGlobalTop}
             onPendingAuthChange={setAuthPending}
           />
@@ -4884,9 +4678,7 @@ export default function FighterGame() {
               <span className="font-semibold text-white">{scores[1] ?? 0}</span>
             </p>
           )}
-          <p className="text-sm text-white/70">
-            Your Best Score: {(gameTheme === "wwii" ? wwiiBest : best).toLocaleString()}
-          </p>
+          <p className="text-sm text-white/70">Your Best Score: {best.toLocaleString()}</p>
           {isAlly ? (
             <p className="text-sm text-white/70">Waiting for host…</p>
           ) : (
@@ -4914,7 +4706,7 @@ export default function FighterGame() {
           <p className="text-lg">
             Score: <span className="font-bold">{score}</span>
           </p>
-          <p className="text-sm text-white/70">Your Best Score: {gameTheme === "wwii" ? wwiiBest : best}</p>
+          <p className="text-sm text-white/70">Your Best Score: {best}</p>
           <button
             onClick={backToMenu}
             className="mt-1 rounded-full bg-white/20 px-6 py-2.5 text-sm font-semibold"
